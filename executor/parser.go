@@ -1,0 +1,116 @@
+package executor
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/chenchen511/agent-runtime/core"
+	"github.com/chenchen511/agent-runtime/internal/textutil"
+)
+
+// actionJSON is the intermediate JSON structure for parsing ReAct output.
+type actionJSON struct {
+	Action     string          `json:"action"`
+	Summary    string          `json:"summary"`
+	ToolCall   *toolCallJSON   `json:"tool_call,omitempty"`
+	StepResult *stepResultJSON `json:"step_result,omitempty"`
+	Experience *experienceJSON `json:"experience_request,omitempty"`
+	Failure    *failureJSON    `json:"failure,omitempty"`
+}
+
+type toolCallJSON struct {
+	ToolName string         `json:"tool_name"`
+	Reason   string         `json:"reason"`
+	Args     map[string]any `json:"args"`
+}
+
+type stepResultJSON struct {
+	Result     string   `json:"result"`
+	Evidence   []string `json:"evidence,omitempty"`
+	Confidence string   `json:"confidence,omitempty"`
+}
+
+type experienceJSON struct {
+	Query  string `json:"query"`
+	Reason string `json:"reason"`
+}
+
+type failureJSON struct {
+	Reason      string `json:"reason"`
+	Recoverable *bool  `json:"recoverable,omitempty"`
+}
+
+// ParseAction parses a JSON string into a ReactAction.
+func ParseAction(content string) (core.ReactAction, error) {
+	jsonStr := textutil.ExtractJSON(content)
+	if jsonStr == "" {
+		jsonStr = content
+	}
+
+	var raw actionJSON
+	if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
+		return core.ReactAction{}, fmt.Errorf("failed to parse action JSON: %w", err)
+	}
+
+	action := core.ReactAction{
+		Summary: raw.Summary,
+	}
+
+	switch raw.Action {
+	case "tool_call":
+		if raw.ToolCall == nil {
+			return core.ReactAction{}, fmt.Errorf("tool_call action missing tool_call field")
+		}
+		if raw.ToolCall.ToolName == "" {
+			return core.ReactAction{}, fmt.Errorf("tool_call missing tool_name")
+		}
+		action.Type = core.ActionToolCall
+		action.ToolName = raw.ToolCall.ToolName
+		action.ToolArgs = raw.ToolCall.Args
+		if action.Summary == "" {
+			action.Summary = raw.ToolCall.Reason
+		}
+
+	case "step_result":
+		if raw.StepResult == nil {
+			return core.ReactAction{}, fmt.Errorf("step_result action missing step_result field")
+		}
+		if raw.StepResult.Result == "" {
+			return core.ReactAction{}, fmt.Errorf("step_result missing result")
+		}
+		action.Type = core.ActionStepResult
+		action.StepResult = raw.StepResult.Result
+		action.Evidence = raw.StepResult.Evidence
+		action.Confidence = raw.StepResult.Confidence
+
+	case "request_experience":
+		if raw.Experience == nil {
+			return core.ReactAction{}, fmt.Errorf("request_experience action missing experience_request field")
+		}
+		if raw.Experience.Query == "" {
+			return core.ReactAction{}, fmt.Errorf("request_experience missing query")
+		}
+		action.Type = core.ActionRequestExperience
+		action.NeedsExperience = true
+		action.ExperienceQuery = raw.Experience.Query
+		if action.Summary == "" {
+			action.Summary = raw.Experience.Reason
+		}
+
+	case "need_user_input":
+		action.Type = core.ActionNeedUserInput
+		action.NeedsUserInput = true
+
+	case "fail_step":
+		action.Type = core.ActionFailStep
+		if raw.Failure != nil {
+			action.FailureReason = raw.Failure.Reason
+			action.Recoverable = raw.Failure.Recoverable
+		}
+
+	default:
+		return core.ReactAction{}, fmt.Errorf("unknown action type: %q", raw.Action)
+	}
+
+	return action, nil
+}
