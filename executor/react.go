@@ -263,7 +263,7 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 }
 
 func (e *ReActExecutor) callLLM(ctx context.Context, taskCtx *StepContext, step *core.PlanStep, prevTurns []core.ReactTurn, callID string) (core.LLMResponse, error) {
-	messages := e.buildReactMessages(taskCtx, step, prevTurns)
+	messages := e.buildReactMessages(ctx, taskCtx, step, prevTurns)
 
 	timeout := e.config.ModelTimeout
 	if dl, ok := ctx.Deadline(); ok {
@@ -283,12 +283,20 @@ func (e *ReActExecutor) callLLM(ctx context.Context, taskCtx *StepContext, step 
 	})
 }
 
-func (e *ReActExecutor) buildReactMessages(taskCtx *StepContext, step *core.PlanStep, prevTurns []core.ReactTurn) []core.LLMMessage {
-	system := fmt.Sprintf(`You are an AI agent executing a step in a plan.
-Current step: %s
-Objective: %s
-Expected output: %s
-
+func (e *ReActExecutor) buildReactMessages(ctx context.Context, taskCtx *StepContext, step *core.PlanStep, prevTurns []core.ReactTurn) []core.LLMMessage {
+	var system string
+	if e.provider != nil {
+		bundle, err := e.provider.Build(ctx, core.PromptRequest{
+			TaskID:  taskCtx.TaskID,
+			StepID:  step.StepID,
+			Purpose: core.PurposeReact,
+		})
+		if err == nil && bundle.SystemPrompt != "" {
+			system = bundle.SystemPrompt
+		}
+	}
+	if system == "" {
+		system = fmt.Sprintf(`You are an AI agent executing a step in a plan.
 You must respond with a JSON object:
 {
   "action": "tool_call|step_result|request_experience|fail_step",
@@ -297,7 +305,16 @@ You must respond with a JSON object:
   "step_result": {"result": "...", "evidence": ["..."], "confidence": "low|medium|high"},
   "experience_request": {"query": "...", "reason": "..."},
   "failure": {"reason": "...", "recoverable": true}
-}`, step.Title, step.Objective, step.ExpectedOutput)
+}`)
+	}
+
+	// Append step context
+	system += fmt.Sprintf(`
+
+## Current Step
+- Title: %s
+- Objective: %s
+- Expected output: %s`, step.Title, step.Objective, step.ExpectedOutput)
 
 	messages := []core.LLMMessage{
 		{Role: "system", Content: system},
