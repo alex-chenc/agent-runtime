@@ -294,7 +294,7 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 			taskCtx.CurrentStepID = nextStep.StepID
 			taskCtx.Status = StatusRunning
 		})
-		hookMgr.EmitType(ctx, HookStepStarted, taskID, snap)
+		hookMgr.EmitAsync(ctx, HookEvent{TaskID: taskID, Type: HookStepStarted, StepID: nextStep.StepID, Snapshot: snap})
 
 		stepCtx := &executor.StepContext{
 			TaskID:    taskID,
@@ -346,9 +346,9 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 		})
 		if stepResult.Status == StepCompleted {
 			completedSteps++
-			hookMgr.EmitType(ctx, HookStepCompleted, taskID, stepSnap)
+			hookMgr.EmitAsync(ctx, HookEvent{TaskID: taskID, Type: HookStepCompleted, StepID: nextStep.StepID, Snapshot: stepSnap})
 		} else {
-			hookMgr.EmitType(ctx, HookStepFailed, taskID, stepSnap)
+			hookMgr.EmitAsync(ctx, HookEvent{TaskID: taskID, Type: HookStepFailed, StepID: nextStep.StepID, Snapshot: stepSnap})
 		}
 
 		if stepResult.Status == StepFailed && stepResult.Error != nil && currentCfg.EnableReflection && reflector != nil {
@@ -734,12 +734,20 @@ func (r *Runtime) generateFinalAnswer(ctx context.Context, llm LLMClient, taskCt
 
 	summaryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), taskCtx.ConfigSnapshot().ModelTimeout)
 	defer cancel()
+
+	systemPrompt := "Generate a concise final answer. Do not claim unexecuted work was completed. Respond as JSON: {\"final_answer\":\"...\"}."
+	if r.promptProvider != nil {
+		if bundle, err := r.promptProvider.Build(summaryCtx, PromptRequest{TaskID: taskID, Purpose: PurposeSummarize}); err == nil && bundle.SystemPrompt != "" {
+			systemPrompt = bundle.SystemPrompt
+		}
+	}
+
 	resp, err := llm.Complete(summaryCtx, LLMRequest{
 		TaskID:         taskID,
 		Purpose:        PurposeSummarize,
 		ResponseSchema: "final_summary",
 		Messages: []LLMMessage{
-			{Role: "system", Content: "Generate a concise final answer. Do not claim unexecuted work was completed. Respond as JSON: {\"final_answer\":\"...\"}."},
+			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: prompt},
 		},
 		Timeout: taskCtx.ConfigSnapshot().ModelTimeout,

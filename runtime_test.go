@@ -259,3 +259,158 @@ func TestRuntimeRunFailOnTaskFinishedHookError(t *testing.T) {
 		t.Fatalf("expected hook error in result, got %+v", result.Errors)
 	}
 }
+
+// recordingHookSink captures hook events for test assertions.
+type recordingHookSink struct {
+	events []HookEvent
+}
+
+func (r *recordingHookSink) Handle(_ context.Context, event HookEvent) error {
+	r.events = append(r.events, event)
+	return nil
+}
+
+func (r *recordingHookSink) eventsByType(t HookEventType) []HookEvent {
+	var out []HookEvent
+	for _, e := range r.events {
+		if e.Type == t {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestStepLifecycleHooksCarryStepID(t *testing.T) {
+	hook := &recordingHookSink{}
+	llm := &sequenceLLM{responses: []LLMResponse{
+		{Content: `{"goal":"inspect","steps":[{"title":"collect","objective":"collect info","expected_output":"info","suggested_tools":["host_info"],"risk_level":"read_only"}]}`},
+		{Content: `{"action":"tool_call","summary":"collecting","tool_call":{"tool_name":"host_info","reason":"need info","args":{"detail":"basic"}}}`},
+		{Content: `{"action":"step_result","summary":"done","step_result":{"result":"info collected","evidence":["info"],"confidence":"high"}}`},
+		{Content: `{"final_answer":"done"}`},
+	}}
+	tools := &successToolGateway{}
+	cfg := runtimeTestConfig()
+	rt, err := New(
+		WithConfig(cfg),
+		WithLLMClient(llm),
+		WithToolGateway(tools),
+		WithTools([]ToolDescriptor{{
+			Name:         "host_info",
+			Description:  "read host info",
+			RiskLevel:    RiskReadOnly,
+			AutoCallable: true,
+			ArgsSchema: map[string]any{
+				"required": []any{"detail"},
+				"properties": map[string]any{
+					"detail": map[string]any{"type": "string"},
+				},
+			},
+		}}),
+		WithHooks(hook),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := rt.Run(context.Background(), TaskInput{TaskID: "task-stepid", UserInput: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed", result.Status)
+	}
+
+	// Wait for async hook events to be processed
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify step_started hook carries StepID
+	started := hook.eventsByType(HookStepStarted)
+	if len(started) == 0 {
+		t.Fatal("expected at least one step_started event")
+	}
+	for _, ev := range started {
+		if ev.StepID == "" {
+			t.Errorf("step_started event missing StepID: %+v", ev)
+		}
+	}
+
+	// Verify step_completed or step_failed hook carries StepID
+	completed := hook.eventsByType(HookStepCompleted)
+	failed := hook.eventsByType(HookStepFailed)
+	terminal := append(completed, failed...)
+	if len(terminal) == 0 {
+		t.Fatal("expected at least one step_completed or step_failed event")
+	}
+	for _, ev := range terminal {
+		if ev.StepID == "" {
+			t.Errorf("step terminal event missing StepID: %+v", ev)
+		}
+	}
+}
+
+type staticPromptProvider struct {
+	planPrompt      PromptBundle
+	reactPrompt     PromptBundle
+	summarizePrompt PromptBundle
+}
+
+func (p *staticPromptProvider) Build(_ context.Context, req PromptRequest) (PromptBundle, error) {
+	switch req.Purpose {
+	case PurposePlan:
+		return p.planPrompt, nil
+	case PurposeReact:
+		return p.reactPrompt, nil
+	case PurposeSummarize:
+		return p.summarizePrompt, nil
+	default:
+		return PromptBundle{}, nil
+	}
+}
+
+func TestGenerateFinalAnswerUsesPromptProvider(t *testing.T) {
+	summarizeSystemPrompt := "你是一个安全分析AI助手，请用中文生成最终分析报告。"
+	provider := &staticPromptProvider{
+		summarizePrompt: PromptBundle{SystemPrompt: summarizeSystemPrompt},
+	}
+
+	llm := &sequenceLLM{responses: []LLMResponse{
+		{Content: `{"goal":"test","steps":[{"title":"s1","objective":"o1","expected_output":"e1","risk_level":"read_only"}]}`},
+		{Content: `{"action":"step_result","summary":"done","step_result":{"result":"ok","evidence":["ok"],"confidence":"high"}}`},
+		{Content: `{"final_answer":"中文结论"}`},
+	}}
+
+	cfg := runtimeTestConfig()
+	rt, err := New(
+		WithConfig(cfg),
+		WithLLMClient(llm),
+		WithPromptProvider(provider),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := rt.Run(context.Background(), TaskInput{TaskID: "task-prompt", UserInput: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed", result.Status)
+	}
+
+	// Find the summarize request (last one)
+	var summarizeReq *LLMRequest
+	for i := len(llm.requests) - 1; i >= 0; i-- {
+		if llm.requests[i].Purpose == PurposeSummarize {
+			summarizeReq = &llm.requests[i]
+			break
+		}
+	}
+	if summarizeReq == nil {
+		t.Fatal("expected a PurposeSummarize request")
+	}
+
+	// Verify the prompt provider's system prompt was used
+	if summarizeReq.Messages[0].Content != summarizeSystemPrompt {
+		t.Errorf("expected system prompt %q, got %q", summarizeSystemPrompt, summarizeReq.Messages[0].Content)
+	}
+}
