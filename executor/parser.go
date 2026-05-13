@@ -20,6 +20,7 @@ type actionJSON struct {
 	// Degraded format: tool_name/tool_args at top level (LLM fallback after tool errors)
 	ToolNameTop string         `json:"tool_name"`
 	ToolArgsTop map[string]any `json:"tool_args"`
+	ArgsTop     map[string]any `json:"args"` // fallback: LLM sometimes uses "args" at top level
 }
 
 type toolCallJSON struct {
@@ -77,10 +78,15 @@ func ParseAction(content string) (core.ReactAction, error) {
 				action.Summary = raw.ToolCall.Reason
 			}
 		} else if raw.ToolNameTop != "" {
-			// Degraded format: tool_name/tool_args at top level (LLM fallback after tool errors)
+			// Degraded format: tool_name at top level (LLM fallback after tool errors)
 			action.Type = core.ActionToolCall
 			action.ToolName = raw.ToolNameTop
-			action.ToolArgs = raw.ToolArgsTop
+			// Try tool_args first, then args (LLM uses either)
+			if raw.ToolArgsTop != nil {
+				action.ToolArgs = raw.ToolArgsTop
+			} else {
+				action.ToolArgs = raw.ArgsTop
+			}
 		} else {
 			return core.ReactAction{}, fmt.Errorf("tool_call action missing tool_call field")
 		}

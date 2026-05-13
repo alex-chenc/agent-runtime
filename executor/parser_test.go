@@ -157,6 +157,24 @@ func TestParseAction_DegradedToolCallFormat(t *testing.T) {
 	}
 }
 
+func TestParseAction_DegradedFormatWithArgsAtTopLevel(t *testing.T) {
+	// LLM uses "args" (not "tool_args") at top level after tool errors
+	input := `{"type":"tool_call","summary":"retry","tool_name":"GetNetworkConnections","args":{"host_id":"h1"}}`
+	action, err := ParseAction(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Type != core.ActionToolCall {
+		t.Errorf("type = %q, want tool_call", action.Type)
+	}
+	if action.ToolName != "GetNetworkConnections" {
+		t.Errorf("tool_name = %q, want GetNetworkConnections", action.ToolName)
+	}
+	if action.ToolArgs == nil || action.ToolArgs["host_id"] != "h1" {
+		t.Errorf("tool_args = %v, want host_id=h1", action.ToolArgs)
+	}
+}
+
 func TestParseAction_DegradedFormatWithActionField(t *testing.T) {
 	// Degraded format but with "action" instead of "type"
 	input := `{"action":"tool_call","summary":"retry","tool_name":"GetNetworkConnections","tool_args":{"host_id":"h1"}}`
