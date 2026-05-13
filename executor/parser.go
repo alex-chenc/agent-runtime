@@ -11,11 +11,15 @@ import (
 // actionJSON is the intermediate JSON structure for parsing ReAct output.
 type actionJSON struct {
 	Action     string          `json:"action"`
+	Type       string          `json:"type"` // alias for action (LLM fallback)
 	Summary    string          `json:"summary"`
 	ToolCall   *toolCallJSON   `json:"tool_call,omitempty"`
 	StepResult *stepResultJSON `json:"step_result,omitempty"`
 	Experience *experienceJSON `json:"experience_request,omitempty"`
 	Failure    *failureJSON    `json:"failure,omitempty"`
+	// Degraded format: tool_name/tool_args at top level (LLM fallback after tool errors)
+	ToolNameTop string         `json:"tool_name"`
+	ToolArgsTop map[string]any `json:"tool_args"`
 }
 
 type toolCallJSON struct {
@@ -56,19 +60,32 @@ func ParseAction(content string) (core.ReactAction, error) {
 		Summary: raw.Summary,
 	}
 
-	switch raw.Action {
+	// Resolve action type: prefer "action", fall back to "type" (LLM degraded format)
+	actionType := raw.Action
+	if actionType == "" {
+		actionType = raw.Type
+	}
+
+	switch actionType {
 	case "tool_call":
-		if raw.ToolCall == nil {
+		// Handle both normal format (tool_call object) and degraded format (tool_name at top level)
+		if raw.ToolCall != nil {
+			action.Type = core.ActionToolCall
+			action.ToolName = raw.ToolCall.ToolName
+			action.ToolArgs = raw.ToolCall.Args
+			if action.Summary == "" {
+				action.Summary = raw.ToolCall.Reason
+			}
+		} else if raw.ToolNameTop != "" {
+			// Degraded format: tool_name/tool_args at top level (LLM fallback after tool errors)
+			action.Type = core.ActionToolCall
+			action.ToolName = raw.ToolNameTop
+			action.ToolArgs = raw.ToolArgsTop
+		} else {
 			return core.ReactAction{}, fmt.Errorf("tool_call action missing tool_call field")
 		}
-		if raw.ToolCall.ToolName == "" {
+		if action.ToolName == "" {
 			return core.ReactAction{}, fmt.Errorf("tool_call missing tool_name")
-		}
-		action.Type = core.ActionToolCall
-		action.ToolName = raw.ToolCall.ToolName
-		action.ToolArgs = raw.ToolCall.Args
-		if action.Summary == "" {
-			action.Summary = raw.ToolCall.Reason
 		}
 
 	case "step_result":

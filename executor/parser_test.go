@@ -124,6 +124,54 @@ func TestParseAction_StepResultMissingResult(t *testing.T) {
 	}
 }
 
+func TestParseAction_TypeFieldFallback(t *testing.T) {
+	// LLM sometimes outputs "type" instead of "action" after tool errors
+	input := `{"type":"tool_call","summary":"retry","tool_call":{"tool_name":"GetProcessTree","reason":"retry with different pid","args":{"host_id":"h1","pid":123}}}`
+	action, err := ParseAction(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Type != core.ActionToolCall {
+		t.Errorf("type = %q, want tool_call", action.Type)
+	}
+	if action.ToolName != "GetProcessTree" {
+		t.Errorf("tool_name = %q, want GetProcessTree", action.ToolName)
+	}
+}
+
+func TestParseAction_DegradedToolCallFormat(t *testing.T) {
+	// LLM degrades to flat format after tool errors: tool_name/tool_args at top level
+	input := `{"type":"tool_call","summary":"retry","tool_name":"GetProcessTree","tool_args":{"host_id":"h1","pid":50350}}`
+	action, err := ParseAction(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Type != core.ActionToolCall {
+		t.Errorf("type = %q, want tool_call", action.Type)
+	}
+	if action.ToolName != "GetProcessTree" {
+		t.Errorf("tool_name = %q, want GetProcessTree", action.ToolName)
+	}
+	if action.ToolArgs == nil || action.ToolArgs["host_id"] != "h1" {
+		t.Errorf("tool_args = %v", action.ToolArgs)
+	}
+}
+
+func TestParseAction_DegradedFormatWithActionField(t *testing.T) {
+	// Degraded format but with "action" instead of "type"
+	input := `{"action":"tool_call","summary":"retry","tool_name":"GetNetworkConnections","tool_args":{"host_id":"h1"}}`
+	action, err := ParseAction(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Type != core.ActionToolCall {
+		t.Errorf("type = %q, want tool_call", action.Type)
+	}
+	if action.ToolName != "GetNetworkConnections" {
+		t.Errorf("tool_name = %q, want GetNetworkConnections", action.ToolName)
+	}
+}
+
 func TestParseAction_WithMarkdownWrapper(t *testing.T) {
 	input := "```json\n{\"action\":\"step_result\",\"summary\":\"done\",\"step_result\":{\"result\":\"ok\"}}\n```"
 	action, err := ParseAction(input)
