@@ -110,12 +110,15 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 		defer cancelTimeout()
 	}
 
+	hookMgr := hook.NewManager(r.hookSinks, r.idGen, cfg.HookTimeout)
+
 	recordingLLM := &recordingLLMClient{
 		next:    r.llmClient,
 		taskCtx: taskCtx,
 		limits:  limiters,
 		idGen:   r.idGen,
 		clock:   r.clock,
+		hookMgr: hookMgr,
 	}
 
 	r.mu.Lock()
@@ -146,8 +149,6 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 		}
 		toolGW = tool.NewGatewayWrapper(r.toolGateway, toolRegistry, policy, r.idGen, cfg.ToolTimeout)
 	}
-
-	hookMgr := hook.NewManager(r.hookSinks, r.idGen, cfg.HookTimeout)
 	planMgr := plan.NewManager()
 	planValidator := plan.NewValidator(cfg.MaxPlanSteps, r.tools, cfg.DisabledTools)
 	auditPolicy := audit.NewPolicy(cfg.AuditEveryNSteps, cfg.AuditEveryNTurns)
@@ -302,7 +303,7 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 			Metadata:  input.Metadata,
 		}
 
-		reactExec := executor.NewReActExecutor(recordingLLM, toolGW, r.experienceProvider, r.idGen, r.promptProvider, currentCfg)
+		reactExec := executor.NewReActExecutor(recordingLLM, toolGW, r.experienceProvider, r.idGen, r.promptProvider, currentCfg, hookMgr)
 		stepResult := reactExec.RunStep(ctx, stepCtx, nextStep)
 
 		exec := StepExecution{
@@ -646,6 +647,7 @@ type recordingLLMClient struct {
 	limits  *limiter.Limiter
 	idGen   IDGenerator
 	clock   Clock
+	hookMgr *hook.Manager
 }
 
 func (c *recordingLLMClient) Complete(ctx context.Context, req LLMRequest) (LLMResponse, error) {
@@ -667,7 +669,7 @@ func (c *recordingLLMClient) Complete(ctx context.Context, req LLMRequest) (LLMR
 		StepID:        req.StepID,
 		Purpose:       req.Purpose,
 		InputSummary:  summarizeMessages(req.Messages),
-		OutputSummary: textutil.Truncate(resp.Content, 1000),
+		OutputSummary: textutil.Truncate(resp.Content, 8000),
 		Schema:        req.ResponseSchema,
 		Model:         resp.Model,
 		TokensUsed:    resp.Usage.TotalTokens,
@@ -676,6 +678,21 @@ func (c *recordingLLMClient) Complete(ctx context.Context, req LLMRequest) (LLMR
 	}
 	if err != nil {
 		record.Error = err.Error()
+	}
+
+	// Emit HookModelCallFinished with full response content for streaming
+	if c.hookMgr != nil && err == nil && resp.Content != "" {
+		c.hookMgr.EmitAsync(ctx, HookEvent{
+			TaskID: req.TaskID,
+			StepID: req.StepID,
+			Type:   HookModelCallFinished,
+			Payload: map[string]interface{}{
+				"output_summary": resp.Content,
+				"purpose":        string(req.Purpose),
+				"model":          resp.Model,
+				"tokens_used":    resp.Usage.TotalTokens,
+			},
+		})
 	}
 
 	c.taskCtx.BatchUpdate(func() {

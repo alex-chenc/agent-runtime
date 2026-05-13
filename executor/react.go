@@ -20,6 +20,12 @@ type ReActExecutor struct {
 	idGen              core.IDGenerator
 	provider           core.PromptProvider
 	config             core.RuntimeConfig
+	hookMgr            HookEmitter
+}
+
+// HookEmitter is the interface for emitting hook events from the executor.
+type HookEmitter interface {
+	EmitAsync(ctx context.Context, event core.HookEvent)
 }
 
 // ToolCaller is the interface for calling tools (simplified from ToolGateway).
@@ -36,6 +42,7 @@ func NewReActExecutor(
 	idGen core.IDGenerator,
 	provider core.PromptProvider,
 	config core.RuntimeConfig,
+	hookMgr HookEmitter,
 ) *ReActExecutor {
 	if idGen == nil {
 		idGen = ids.Generator{}
@@ -47,6 +54,7 @@ func NewReActExecutor(
 		idGen:              idGen,
 		provider:           provider,
 		config:             config,
+		hookMgr:            hookMgr,
 	}
 }
 
@@ -405,6 +413,21 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 		StartedAt:   start,
 	}
 
+	// Emit HookToolCallStarted
+	if e.hookMgr != nil {
+		e.hookMgr.EmitAsync(ctx, core.HookEvent{
+			TaskID: taskCtx.TaskID,
+			StepID: step.StepID,
+			Type:   core.HookToolCallStarted,
+			Payload: map[string]interface{}{
+				"tool_name":   action.ToolName,
+				"call_id":     callID,
+				"args_summary": textutil.SummarizeJSON(action.ToolArgs, 1000),
+				"reason":      action.Summary,
+			},
+		})
+	}
+
 	if e.toolGW == nil {
 		errMsg := "tool gateway is not configured"
 		obs := &core.Observation{
@@ -418,6 +441,21 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 		record.Status = core.ToolCallFailed
 		record.ErrorMessage = errMsg
 		record.EndedAt = time.Now()
+		// Emit HookToolCallFinished for gateway-not-configured error
+		if e.hookMgr != nil {
+			e.hookMgr.EmitAsync(ctx, core.HookEvent{
+				TaskID: taskCtx.TaskID,
+				StepID: step.StepID,
+				Type:   core.HookToolCallFinished,
+				Payload: map[string]interface{}{
+					"call_id":        callID,
+					"tool_name":      action.ToolName,
+					"status":         string(core.ToolCallFailed),
+					"error_message":  errMsg,
+					"duration_ms":    time.Since(start).Milliseconds(),
+				},
+			})
+		}
 		return obs, record, &core.RuntimeError{
 			ErrorID:     e.idGen.Generate(),
 			Kind:        core.ErrToolCall,
@@ -454,6 +492,21 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 		obs.Status = core.ToolCallFailed
 		obs.Error = err.Error()
 		obs.Summary = fmt.Sprintf("Tool %s failed: %v", action.ToolName, err)
+		// Emit HookToolCallFinished for CallValidated error
+		if e.hookMgr != nil {
+			e.hookMgr.EmitAsync(ctx, core.HookEvent{
+				TaskID: taskCtx.TaskID,
+				StepID: step.StepID,
+				Type:   core.HookToolCallFinished,
+				Payload: map[string]interface{}{
+					"call_id":        callID,
+					"tool_name":      action.ToolName,
+					"status":         string(core.ToolCallFailed),
+					"error_message":  err.Error(),
+					"duration_ms":    time.Since(start).Milliseconds(),
+				},
+			})
+		}
 		return obs, record, &core.RuntimeError{
 			ErrorID:     e.idGen.Generate(),
 			Kind:        core.ErrToolCall,
@@ -493,6 +546,22 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 		if record.Status == core.ToolCallTimeout {
 			kind = core.ErrToolTimeout
 		}
+		// Emit HookToolCallFinished for failed tool calls
+		if e.hookMgr != nil {
+			e.hookMgr.EmitAsync(ctx, core.HookEvent{
+				TaskID: taskCtx.TaskID,
+				StepID: step.StepID,
+				Type:   core.HookToolCallFinished,
+				Payload: map[string]interface{}{
+					"call_id":        callID,
+					"tool_name":      action.ToolName,
+					"status":         string(record.Status),
+					"error_message":  firstNonEmpty(resp.ErrorMessage, resp.Summary),
+					"result_summary": resp.Summary,
+					"duration_ms":    time.Since(start).Milliseconds(),
+				},
+			})
+		}
 		return obs, record, &core.RuntimeError{
 			ErrorID:     e.idGen.Generate(),
 			Kind:        kind,
@@ -505,6 +574,23 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 			OccurredAt:  start,
 		}
 	}
+
+	// Emit HookToolCallFinished for successful tool calls
+	if e.hookMgr != nil {
+		e.hookMgr.EmitAsync(ctx, core.HookEvent{
+			TaskID: taskCtx.TaskID,
+			StepID: step.StepID,
+			Type:   core.HookToolCallFinished,
+			Payload: map[string]interface{}{
+				"call_id":        callID,
+				"tool_name":      action.ToolName,
+				"status":         string(record.Status),
+				"result_summary": resp.Summary,
+				"duration_ms":    time.Since(start).Milliseconds(),
+			},
+		})
+	}
+
 	return obs, record, nil
 }
 
