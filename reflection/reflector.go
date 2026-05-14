@@ -52,8 +52,9 @@ Respond with JSON:
   "root_cause": "why this failed",
   "impact": "how this affects the task",
   "recoverable": true/false,
-  "recommendation": "retry_step|skip_step|correct_plan|summarize_now|fail",
+  "recommendation": "retry_step|skip_step|correct_plan|request_experience|summarize_now|fail",
   "correction_hint": "hint for plan correction if applicable",
+  "experience_query": "query to find relevant experience (for request_experience recommendation)",
   "reusable_lesson": "what to remember for similar cases"
 }`, input.PlanGoal, input.StepID, input.Trigger, input.Error.Message, input.StepResult)
 

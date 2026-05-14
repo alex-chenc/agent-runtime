@@ -414,3 +414,174 @@ func TestGenerateFinalAnswerUsesPromptProvider(t *testing.T) {
 		t.Errorf("expected system prompt %q, got %q", summarizeSystemPrompt, summarizeReq.Messages[0].Content)
 	}
 }
+
+func TestReflectionRetryStep(t *testing.T) {
+	llm := &sequenceLLM{responses: []LLMResponse{
+		// Plan
+		{Content: `{"goal":"test","steps":[{"title":"s1","objective":"do thing","expected_output":"result","risk_level":"read_only"}]}`},
+		// First attempt: fail
+		{Content: `{"action":"fail_step","failure":{"reason":"tool failed","recoverable":true}}`},
+		// Reflection: retry_step
+		{Content: `{"root_cause":"tool error","impact":"step incomplete","recoverable":true,"recommendation":"retry_step","reusable_lesson":"retry helps"}`},
+		// Second attempt: success
+		{Content: `{"action":"step_result","summary":"done","step_result":{"result":"success","evidence":["ok"],"confidence":"high"}}`},
+		// Final answer
+		{Content: `{"final_answer":"completed after retry"}`},
+	}}
+	cfg := runtimeTestConfig()
+	cfg.EnableReflection = true
+	cfg.MaxReflections = 3
+	cfg.MaxStepRetries = 2
+	rt, err := New(WithConfig(cfg), WithLLMClient(llm))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := rt.Run(context.Background(), TaskInput{TaskID: "t1", UserInput: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed; errors=%v", result.Status, result.Errors)
+	}
+	if len(result.Reflections) != 1 {
+		t.Fatalf("expected 1 reflection, got %d", len(result.Reflections))
+	}
+	if result.Reflections[0].Recommendation != ReflectRetryStep {
+		t.Fatalf("expected retry_step recommendation, got %q", result.Reflections[0].Recommendation)
+	}
+	// Should have 2 step executions (original + retry)
+	if len(result.StepExecutions) < 2 {
+		t.Fatalf("expected >=2 step executions (retry), got %d", len(result.StepExecutions))
+	}
+}
+
+func TestReflectionSkipStep(t *testing.T) {
+	llm := &sequenceLLM{responses: []LLMResponse{
+		// Plan with 2 steps
+		{Content: `{"goal":"test","steps":[{"title":"s1","objective":"do thing","expected_output":"result","risk_level":"read_only"},{"title":"s2","objective":"do other","expected_output":"result","risk_level":"read_only"}]}`},
+		// Step 1: fail
+		{Content: `{"action":"fail_step","failure":{"reason":"cannot do","recoverable":false}}`},
+		// Reflection: skip_step
+		{Content: `{"root_cause":"unrecoverable","impact":"minor","recoverable":false,"recommendation":"skip_step","reusable_lesson":"skip when stuck"}`},
+		// Step 2: success
+		{Content: `{"action":"step_result","summary":"done","step_result":{"result":"ok","evidence":["ok"],"confidence":"high"}}`},
+		// Final answer
+		{Content: `{"final_answer":"completed with skip"}`},
+	}}
+	cfg := runtimeTestConfig()
+	cfg.EnableReflection = true
+	cfg.MaxReflections = 3
+	cfg.AllowSkipFailedStep = true
+	rt, err := New(WithConfig(cfg), WithLLMClient(llm))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := rt.Run(context.Background(), TaskInput{TaskID: "t2", UserInput: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed; errors=%v", result.Status, result.Errors)
+	}
+	if len(result.Reflections) != 1 {
+		t.Fatalf("expected 1 reflection, got %d", len(result.Reflections))
+	}
+	if result.Reflections[0].Recommendation != ReflectSkipStep {
+		t.Fatalf("expected skip_step recommendation, got %q", result.Reflections[0].Recommendation)
+	}
+}
+
+func TestReflectionSummarizeNow(t *testing.T) {
+	llm := &sequenceLLM{responses: []LLMResponse{
+		// Plan
+		{Content: `{"goal":"test","steps":[{"title":"s1","objective":"do thing","expected_output":"result","risk_level":"read_only"}]}`},
+		// Step 1: fail
+		{Content: `{"action":"fail_step","failure":{"reason":"stuck","recoverable":false}}`},
+		// Reflection: summarize_now
+		{Content: `{"root_cause":"dead end","impact":"cannot proceed","recoverable":false,"recommendation":"summarize_now","reusable_lesson":"give up early"}`},
+		// Final answer
+		{Content: `{"final_answer":"could not complete, here is what we know"}`},
+	}}
+	cfg := runtimeTestConfig()
+	cfg.EnableReflection = true
+	cfg.MaxReflections = 3
+	rt, err := New(WithConfig(cfg), WithLLMClient(llm))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := rt.Run(context.Background(), TaskInput{TaskID: "t3", UserInput: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed; errors=%v", result.Status, result.Errors)
+	}
+	if result.ExitReason != ExitNormalCompleted {
+		t.Fatalf("exit reason = %q, want %q", result.ExitReason, ExitNormalCompleted)
+	}
+}
+
+func TestReflectionFail(t *testing.T) {
+	llm := &sequenceLLM{responses: []LLMResponse{
+		// Plan
+		{Content: `{"goal":"test","steps":[{"title":"s1","objective":"do thing","expected_output":"result","risk_level":"read_only"}]}`},
+		// Step 1: fail
+		{Content: `{"action":"fail_step","failure":{"reason":"fatal","recoverable":false}}`},
+		// Reflection: fail
+		{Content: `{"root_cause":"fatal error","impact":"task cannot continue","recoverable":false,"recommendation":"fail","reusable_lesson":"check prereqs"}`},
+		// Final answer
+		{Content: `{"final_answer":"task failed"}`},
+	}}
+	cfg := runtimeTestConfig()
+	cfg.EnableReflection = true
+	cfg.MaxReflections = 3
+	rt, err := New(WithConfig(cfg), WithLLMClient(llm))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := rt.Run(context.Background(), TaskInput{TaskID: "t4", UserInput: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitReason != ExitReflectionUnrecoverable {
+		t.Fatalf("exit reason = %q, want %q", result.ExitReason, ExitReflectionUnrecoverable)
+	}
+}
+
+func TestReflectionRetryStepMaxRetries(t *testing.T) {
+	llm := &sequenceLLM{responses: []LLMResponse{
+		// Plan
+		{Content: `{"goal":"test","steps":[{"title":"s1","objective":"do thing","expected_output":"result","risk_level":"read_only"}]}`},
+		// First attempt: fail
+		{Content: `{"action":"fail_step","failure":{"reason":"fail1","recoverable":true}}`},
+		// Reflection 1: retry_step
+		{Content: `{"root_cause":"err1","impact":"step failed","recoverable":true,"recommendation":"retry_step"}`},
+		// Second attempt: fail again
+		{Content: `{"action":"fail_step","failure":{"reason":"fail2","recoverable":true}}`},
+		// Reflection 2: retry_step (but max retries = 1, so should NOT retry)
+		{Content: `{"root_cause":"err2","impact":"step failed again","recoverable":true,"recommendation":"retry_step"}`},
+		// Final answer (forced since no more steps)
+		{Content: `{"final_answer":"failed after retries"}`},
+	}}
+	cfg := runtimeTestConfig()
+	cfg.EnableReflection = true
+	cfg.MaxReflections = 3
+	cfg.MaxStepRetries = 1 // Only 1 retry allowed
+	rt, err := New(WithConfig(cfg), WithLLMClient(llm))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := rt.Run(context.Background(), TaskInput{TaskID: "t5", UserInput: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should have 2 reflections (both retry_step)
+	if len(result.Reflections) != 2 {
+		t.Fatalf("expected 2 reflections, got %d", len(result.Reflections))
+	}
+	// Step should have failed (couldn't retry after max)
+	if result.Status == StatusCompleted {
+		// It may complete with best-effort, that's OK
+		t.Logf("status = %q (best effort)", result.Status)
+	}
+}

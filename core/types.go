@@ -135,6 +135,8 @@ const (
 	HookReflectionStarted  HookEventType = "reflection_started"
 	HookReflectionFinished HookEventType = "reflection_finished"
 	HookCorrectionApplied  HookEventType = "correction_applied"
+	HookStepRetrying       HookEventType = "step_retrying"
+	HookStepSkipped        HookEventType = "step_skipped"
 	HookConfigChanged      HookEventType = "config_changed"
 	HookTaskInterrupted    HookEventType = "task_interrupted"
 	HookTaskFinished       HookEventType = "task_finished"
@@ -525,6 +527,7 @@ type RuntimeConfig struct {
 	MaxAudits             int           `json:"max_audits"`
 	MaxCorrections        int           `json:"max_corrections"`
 	MaxReflections        int           `json:"max_reflections"`
+	MaxStepRetries        int           `json:"max_step_retries"`
 	AllowDynamicNewSteps  bool          `json:"allow_dynamic_new_steps"`
 	AllowSkipFailedStep   bool          `json:"allow_skip_failed_step"`
 	AllowBestEffortAnswer bool          `json:"allow_best_effort_answer"`
@@ -543,7 +546,7 @@ func DefaultConfig() RuntimeConfig {
 		ToolTimeout: 60 * time.Second, HookTimeout: 10 * time.Second,
 		EnableReflection: true, EnableAudit: true, EnableCorrection: true,
 		EnableExperience: true, AuditEveryNSteps: 3, AuditEveryNTurns: 0,
-		MaxAudits: 5, MaxCorrections: 3, MaxReflections: 5,
+		MaxAudits: 5, MaxCorrections: 3, MaxReflections: 5, MaxStepRetries: 2,
 		AllowDynamicNewSteps: true, AllowSkipFailedStep: true,
 		AllowBestEffortAnswer: true,
 	}
@@ -601,6 +604,9 @@ func (c RuntimeConfig) Validate() error {
 	if c.AllowDangerousTools && !c.AllowHighRiskTools {
 		return fmt.Errorf("config: AllowDangerousTools requires AllowHighRiskTools")
 	}
+	if c.MaxStepRetries < 0 {
+		return fmt.Errorf("config: MaxStepRetries must be >= 0, got %d", c.MaxStepRetries)
+	}
 	return nil
 }
 
@@ -616,6 +622,7 @@ type ConfigPatch struct {
 	EnableReflection    *bool          `json:"enable_reflection,omitempty"`
 	EnableAudit         *bool          `json:"enable_audit,omitempty"`
 	EnableCorrection    *bool          `json:"enable_correction,omitempty"`
+	MaxStepRetries      *int           `json:"max_step_retries,omitempty"`
 	DisabledTools       []string       `json:"disabled_tools,omitempty"`
 }
 
@@ -653,6 +660,9 @@ func (c RuntimeConfig) ApplyPatch(patch ConfigPatch) RuntimeConfig {
 	}
 	if patch.EnableCorrection != nil {
 		result.EnableCorrection = *patch.EnableCorrection
+	}
+	if patch.MaxStepRetries != nil {
+		result.MaxStepRetries = *patch.MaxStepRetries
 	}
 	if patch.DisabledTools != nil {
 		result.DisabledTools = patch.DisabledTools

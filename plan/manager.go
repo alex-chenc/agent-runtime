@@ -41,7 +41,7 @@ func (m *Manager) CurrentPlan() *core.Plan {
 	return m.currentPlan
 }
 
-// NextExecutableStep returns the next pending step whose dependencies are all satisfied.
+// NextExecutableStep returns the next pending or retrying step whose dependencies are all satisfied.
 func (m *Manager) NextExecutableStep() *core.PlanStep {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -50,7 +50,7 @@ func (m *Manager) NextExecutableStep() *core.PlanStep {
 	}
 	for i := range m.currentPlan.Steps {
 		step := &m.currentPlan.Steps[i]
-		if step.Status != core.StepPending {
+		if step.Status != core.StepPending && step.Status != core.StepRetrying {
 			continue
 		}
 		if m.dependenciesMet(step) {
@@ -93,6 +93,23 @@ func (m *Manager) UpdateStepStatus(stepID string, status core.StepStatus) error 
 	for i := range m.currentPlan.Steps {
 		if m.currentPlan.Steps[i].StepID == stepID {
 			m.currentPlan.Steps[i].Status = status
+			return nil
+		}
+	}
+	return fmt.Errorf("plan manager: step %q not found", stepID)
+}
+
+// ResetStepForRetry resets a failed step to StepRetrying status and increments its RetryCount.
+func (m *Manager) ResetStepForRetry(stepID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.currentPlan == nil {
+		return fmt.Errorf("plan manager: no current plan")
+	}
+	for i := range m.currentPlan.Steps {
+		if m.currentPlan.Steps[i].StepID == stepID {
+			m.currentPlan.Steps[i].Status = core.StepRetrying
+			m.currentPlan.Steps[i].RetryCount++
 			return nil
 		}
 	}

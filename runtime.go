@@ -283,7 +283,9 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 		nextStep := planMgr.NextExecutableStep()
 		if nextStep == nil {
 			taskCtx.BatchUpdate(func() {
-				taskCtx.ExitReason = ExitNormalCompleted
+				if taskCtx.ExitReason == "" {
+					taskCtx.ExitReason = ExitNormalCompleted
+				}
 				taskCtx.Counters = countersFromLimiter(limiters)
 			})
 			break
@@ -308,7 +310,7 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 
 		exec := StepExecution{
 			StepID:     stepResult.StepID,
-			Attempt:    1,
+			Attempt:    nextStep.RetryCount + 1,
 			Status:     stepResult.Status,
 			StartedAt:  stepResult.StartedAt,
 			EndedAt:    stepResult.EndedAt,
@@ -370,6 +372,16 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 						taskCtx.Counters = countersFromLimiter(limiters)
 					})
 					hookMgr.EmitType(ctx, HookReflectionFinished, taskID, reflSnap)
+
+					// Act on the reflection recommendation
+					handled := r.handleReflectionRecommendation(
+						ctx, taskID, refl, nextStep, planMgr, corrector, limiters,
+						currentCfg, taskCtx, hookMgr, errMgr,
+					)
+					if handled {
+						taskCtx.SetStatus(StatusRunning)
+						continue
+					}
 				}
 				taskCtx.SetStatus(StatusRunning)
 			}
@@ -944,4 +956,193 @@ func buildFinalAnswer(status TaskStatus, reason ExitReason, steps []StepExecutio
 		}
 	}
 	return b.String()
+}
+
+// handleReflectionRecommendation acts on a reflection's recommendation.
+// Returns true if the recommendation was handled and the loop should continue.
+func (r *Runtime) handleReflectionRecommendation(
+	ctx context.Context,
+	taskID string,
+	refl *ReflectionResult,
+	step *PlanStep,
+	planMgr *plan.Manager,
+	corrector *correction.Corrector,
+	limiters *limiter.Limiter,
+	cfg RuntimeConfig,
+	taskCtx *task.Context,
+	hookMgr *hook.Manager,
+	errMgr *apperr.Manager,
+) bool {
+	switch refl.Recommendation {
+	case ReflectRetryStep:
+		return r.handleRetryStep(ctx, taskID, refl, step, planMgr, limiters, cfg, taskCtx, hookMgr)
+	case ReflectSkipStep:
+		return r.handleSkipStep(ctx, taskID, step, planMgr, cfg, taskCtx, hookMgr)
+	case ReflectCorrectPlan:
+		return r.handleCorrectPlan(ctx, taskID, refl, step, planMgr, corrector, limiters, cfg, taskCtx, hookMgr, errMgr)
+	case ReflectRequestExperience:
+		return r.handleRequestExperience(ctx, taskID, refl, step, planMgr, limiters, cfg, taskCtx, hookMgr)
+	case ReflectSummarizeNow:
+		taskCtx.BatchUpdate(func() {
+			taskCtx.ExitReason = ExitNormalCompleted
+			taskCtx.Counters = countersFromLimiter(limiters)
+		})
+		return true
+	case ReflectFail:
+		taskCtx.BatchUpdate(func() {
+			taskCtx.ExitReason = ExitReflectionUnrecoverable
+			taskCtx.Counters = countersFromLimiter(limiters)
+		})
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Runtime) handleRetryStep(
+	ctx context.Context,
+	taskID string,
+	refl *ReflectionResult,
+	step *PlanStep,
+	planMgr *plan.Manager,
+	limiters *limiter.Limiter,
+	cfg RuntimeConfig,
+	taskCtx *task.Context,
+	hookMgr *hook.Manager,
+) bool {
+	if step.RetryCount >= cfg.MaxStepRetries {
+		return false
+	}
+	if err := planMgr.ResetStepForRetry(step.StepID); err != nil {
+		return false
+	}
+	snap := taskCtx.BatchUpdate(func() {
+		taskCtx.Counters = countersFromLimiter(limiters)
+	})
+	hookMgr.EmitType(ctx, HookStepRetrying, taskID, snap)
+	return true
+}
+
+func (r *Runtime) handleSkipStep(
+	ctx context.Context,
+	taskID string,
+	step *PlanStep,
+	planMgr *plan.Manager,
+	cfg RuntimeConfig,
+	taskCtx *task.Context,
+	hookMgr *hook.Manager,
+) bool {
+	if !cfg.AllowSkipFailedStep {
+		return false
+	}
+	if err := planMgr.UpdateStepStatus(step.StepID, StepSkipped); err != nil {
+		return false
+	}
+	snap := taskCtx.BatchUpdate(func() {
+		for i := len(taskCtx.Steps) - 1; i >= 0; i-- {
+			if taskCtx.Steps[i].StepID == step.StepID {
+				taskCtx.Steps[i].Status = StepSkipped
+				break
+			}
+		}
+	})
+	hookMgr.EmitType(ctx, HookStepSkipped, taskID, snap)
+	return true
+}
+
+func (r *Runtime) handleCorrectPlan(
+	ctx context.Context,
+	taskID string,
+	refl *ReflectionResult,
+	step *PlanStep,
+	planMgr *plan.Manager,
+	corrector *correction.Corrector,
+	limiters *limiter.Limiter,
+	cfg RuntimeConfig,
+	taskCtx *task.Context,
+	hookMgr *hook.Manager,
+	errMgr *apperr.Manager,
+) bool {
+	if !cfg.EnableCorrection || corrector == nil {
+		return false
+	}
+	if limiters.ExceedsCorrections(cfg.MaxCorrections) {
+		return false
+	}
+	taskCtx.SetStatus(StatusCorrecting)
+	corrResult, err := corrector.Correct(ctx, correction.CorrectionInput{
+		TaskID:        taskID,
+		CurrentPlan:   planMgr.CurrentPlan(),
+		Trigger:       "reflection",
+		Hint:          refl.CorrectionHint,
+		AllowNewSteps: cfg.AllowDynamicNewSteps,
+		MaxSteps:      cfg.MaxPlanSteps,
+	})
+	if err != nil || corrResult == nil {
+		taskCtx.SetStatus(StatusRunning)
+		return false
+	}
+	completedIDs := completedStepIDs(planMgr.CurrentPlan())
+	validation := correction.ValidateCorrection(corrResult, planMgr.CurrentPlan(), completedIDs)
+	if validation.Valid {
+		_ = planMgr.ApplyCorrection(corrResult)
+		limiters.IncrCorrections()
+		corrSnap := taskCtx.BatchUpdate(func() {
+			taskCtx.Corrections = append(taskCtx.Corrections, *corrResult)
+			taskCtx.Counters = countersFromLimiter(limiters)
+		})
+		hookMgr.EmitType(ctx, HookCorrectionApplied, taskID, corrSnap)
+	} else {
+		corrResult.Valid = false
+		corrResult.ValidationErrors = append(corrResult.ValidationErrors, validation.Errors...)
+		corrErr := apperr.New(ErrCorrection, "correction", taskID, step.StepID, strings.Join(validation.Errors, "; "))
+		corrErr.ErrorID = r.idGen.Generate()
+		errMgr.Add(corrErr)
+		corrSnap := taskCtx.BatchUpdate(func() {
+			taskCtx.Corrections = append(taskCtx.Corrections, *corrResult)
+			taskCtx.Errors = append(taskCtx.Errors, corrErr)
+			taskCtx.Counters = countersFromLimiter(limiters)
+		})
+		hookMgr.EmitType(ctx, HookCorrectionApplied, taskID, corrSnap)
+	}
+	taskCtx.SetStatus(StatusRunning)
+	return true
+}
+
+func (r *Runtime) handleRequestExperience(
+	ctx context.Context,
+	taskID string,
+	refl *ReflectionResult,
+	step *PlanStep,
+	planMgr *plan.Manager,
+	limiters *limiter.Limiter,
+	cfg RuntimeConfig,
+	taskCtx *task.Context,
+	hookMgr *hook.Manager,
+) bool {
+	if !cfg.EnableExperience || r.experienceProvider == nil {
+		return r.handleRetryStep(ctx, taskID, refl, step, planMgr, limiters, cfg, taskCtx, hookMgr)
+	}
+	query := refl.ExperienceQuery
+	if query == "" {
+		query = refl.RootCause
+	}
+	resp, err := r.experienceProvider.Fetch(ctx, ExperienceRequest{
+		TaskID:   taskID,
+		Query:    query,
+		MaxItems: 3,
+	})
+	if err == nil && len(resp.Items) > 0 {
+		taskCtx.BatchUpdate(func() {
+			for _, item := range resp.Items {
+				taskCtx.ExperienceUsage = append(taskCtx.ExperienceUsage, ExperienceUsage{
+					ItemID:    item.ID,
+					UsedAt:    "reflection",
+					Helpful:   true,
+					Timestamp: r.clock.Now(),
+				})
+			}
+		})
+	}
+	return r.handleRetryStep(ctx, taskID, refl, step, planMgr, limiters, cfg, taskCtx, hookMgr)
 }

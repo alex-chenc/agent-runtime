@@ -198,3 +198,74 @@ func TestManager_AllStepsTerminal_Pending(t *testing.T) {
 		t.Error("expected not all steps terminal")
 	}
 }
+
+func TestManager_ResetStepForRetry(t *testing.T) {
+	m := NewManager()
+	m.SetInitialPlan(makePlan(
+		core.PlanStep{StepID: "step_1", Title: "t", Objective: "o", Status: core.StepFailed},
+	))
+	if err := m.ResetStepForRetry("step_1"); err != nil {
+		t.Fatal(err)
+	}
+	plan := m.CurrentPlan()
+	if plan.Steps[0].Status != core.StepRetrying {
+		t.Errorf("expected StepRetrying, got %s", plan.Steps[0].Status)
+	}
+	if plan.Steps[0].RetryCount != 1 {
+		t.Errorf("expected RetryCount 1, got %d", plan.Steps[0].RetryCount)
+	}
+}
+
+func TestManager_ResetStepForRetry_NotFound(t *testing.T) {
+	m := NewManager()
+	m.SetInitialPlan(makePlan(pendingStep("step_1")))
+	if err := m.ResetStepForRetry("nonexistent"); err == nil {
+		t.Error("expected error for non-existent step")
+	}
+}
+
+func TestManager_ResetStepForRetry_NoPlan(t *testing.T) {
+	m := NewManager()
+	if err := m.ResetStepForRetry("step_1"); err == nil {
+		t.Error("expected error when no plan set")
+	}
+}
+
+func TestManager_NextExecutableStep_IncludesRetrying(t *testing.T) {
+	m := NewManager()
+	m.SetInitialPlan(makePlan(
+		completedStep("step_1"),
+		core.PlanStep{StepID: "step_2", Title: "t", Objective: "o", Status: core.StepRetrying},
+	))
+	step := m.NextExecutableStep()
+	if step == nil || step.StepID != "step_2" {
+		t.Errorf("expected step_2 (retrying), got %v", step)
+	}
+}
+
+func TestManager_NextExecutableStep_RetryingWithUnmetDep(t *testing.T) {
+	m := NewManager()
+	m.SetInitialPlan(makePlan(
+		core.PlanStep{StepID: "step_1", Title: "t", Objective: "o", Status: core.StepRetrying},
+		pendingStep("step_2", "step_1"),
+	))
+	// step_1 is retrying (not completed), so step_2's dep is unmet
+	step := m.NextExecutableStep()
+	if step == nil || step.StepID != "step_1" {
+		t.Errorf("expected step_1 (retrying, dep unmet for step_2), got %v", step)
+	}
+}
+
+func TestManager_ResetStepForRetry_IncrementsRetryCount(t *testing.T) {
+	m := NewManager()
+	m.SetInitialPlan(makePlan(
+		core.PlanStep{StepID: "step_1", Title: "t", Objective: "o", Status: core.StepFailed, RetryCount: 1},
+	))
+	if err := m.ResetStepForRetry("step_1"); err != nil {
+		t.Fatal(err)
+	}
+	plan := m.CurrentPlan()
+	if plan.Steps[0].RetryCount != 2 {
+		t.Errorf("expected RetryCount 2, got %d", plan.Steps[0].RetryCount)
+	}
+}

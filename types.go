@@ -127,6 +127,8 @@ const (
 	HookReflectionStarted  = core.HookReflectionStarted
 	HookReflectionFinished = core.HookReflectionFinished
 	HookCorrectionApplied  = core.HookCorrectionApplied
+	HookStepRetrying       = core.HookStepRetrying
+	HookStepSkipped        = core.HookStepSkipped
 	HookConfigChanged      = core.HookConfigChanged
 	HookTaskInterrupted    = core.HookTaskInterrupted
 	HookTaskFinished       = core.HookTaskFinished
