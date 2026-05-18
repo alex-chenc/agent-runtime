@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chenchen511/agent-runtime/contextbudget"
 	"github.com/chenchen511/agent-runtime/core"
 	"github.com/chenchen511/agent-runtime/internal/ids"
 	"github.com/chenchen511/agent-runtime/internal/limiter"
@@ -21,6 +22,7 @@ type ReActExecutor struct {
 	provider           core.PromptProvider
 	config             core.RuntimeConfig
 	hookMgr            HookEmitter
+	compressor         *contextbudget.Compressor
 }
 
 // HookEmitter is the interface for emitting hook events from the executor.
@@ -43,6 +45,7 @@ func NewReActExecutor(
 	provider core.PromptProvider,
 	config core.RuntimeConfig,
 	hookMgr HookEmitter,
+	compressor *contextbudget.Compressor,
 ) *ReActExecutor {
 	if idGen == nil {
 		idGen = ids.Generator{}
@@ -55,6 +58,7 @@ func NewReActExecutor(
 		provider:           provider,
 		config:             config,
 		hookMgr:            hookMgr,
+		compressor:         compressor,
 	}
 }
 
@@ -264,6 +268,31 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 
 func (e *ReActExecutor) callLLM(ctx context.Context, taskCtx *StepContext, step *core.PlanStep, prevTurns []core.ReactTurn, callID string) (core.LLMResponse, error) {
 	messages := e.buildReactMessages(ctx, taskCtx, step, prevTurns)
+
+	// Apply context compression if enabled
+	if e.compressor != nil {
+		compressed, records, err := e.compressor.Compress(messages, nil, step.StepID)
+		if err == nil && len(records) > 0 {
+			messages = compressed
+			// Emit compression events via hook
+			if e.hookMgr != nil {
+				for _, rec := range records {
+					e.hookMgr.EmitAsync(ctx, core.HookEvent{
+						Type:      core.HookContextCompressed,
+						TaskID:    taskCtx.TaskID,
+						StepID:    step.StepID,
+						CreatedAt: time.Now(),
+						Payload: map[string]interface{}{
+							"strategy":      string(rec.Strategy),
+							"trigger_ratio": rec.TriggerRatio,
+							"before_tokens": rec.BeforeTokens,
+							"after_tokens":  rec.AfterTokens,
+						},
+					})
+				}
+			}
+		}
+	}
 
 	timeout := e.config.ModelTimeout
 	if dl, ok := ctx.Deadline(); ok {

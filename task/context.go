@@ -37,6 +37,12 @@ type Context struct {
 	ConfigChanges   []core.ConfigChange
 	FinalAnswer     string
 
+	// Context budget tracking
+	CompressionRecords    []core.CompressionRecord
+	ContextBudget         *core.ContextBudgetSnapshot
+	TotalPromptTokens     int
+	TotalCompletionTokens int
+
 	Interrupted     bool
 	InterruptReason string
 	StartedAt       time.Time

@@ -10,6 +10,7 @@ import (
 
 	"github.com/chenchen511/agent-runtime/apperr"
 	"github.com/chenchen511/agent-runtime/audit"
+	"github.com/chenchen511/agent-runtime/contextbudget"
 	"github.com/chenchen511/agent-runtime/correction"
 	"github.com/chenchen511/agent-runtime/executor"
 	"github.com/chenchen511/agent-runtime/exit"
@@ -166,6 +167,35 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 		corrector = correction.New(recordingLLM, r.idGen)
 	}
 
+	// Create context compressor if enabled
+	var compressor *contextbudget.Compressor
+	if cfg.EnableContextCompress {
+		estimator := contextbudget.NewDefaultEstimator()
+		compressor = contextbudget.NewCompressor(cfg, estimator, recordingLLM)
+	}
+
+	// Preflight context budget check
+	if compressor != nil {
+		preflightMessages := []LLMMessage{
+			{Role: "system", Content: "preflight estimate"},
+			{Role: "user", Content: input.UserInput},
+		}
+		snap := compressor.GetBudgetSnapshot(preflightMessages)
+		taskCtx.BatchUpdate(func() {
+			taskCtx.ContextBudget = &snap
+		})
+		hookMgr.EmitType(ctx, HookContextBudgetChecked, taskID, taskCtx.Snapshot())
+
+		if snap.ContextRatio > 1.0 {
+			taskCtx.BatchUpdate(func() {
+				taskCtx.Status = StatusFailed
+				taskCtx.ExitReason = ExitContextOverflow
+				taskCtx.EndedAt = r.clock.Now()
+			})
+			return r.buildResult(taskCtx, nil, nil, limiters, errMgr), nil
+		}
+	}
+
 	hookMgr.EmitType(ctx, HookTaskStarted, taskID, taskCtx.Snapshot())
 
 	taskCtx.SetStatus(StatusPlanning)
@@ -305,7 +335,7 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 			Metadata:  input.Metadata,
 		}
 
-		reactExec := executor.NewReActExecutor(recordingLLM, toolGW, r.experienceProvider, r.idGen, r.promptProvider, currentCfg, hookMgr)
+		reactExec := executor.NewReActExecutor(recordingLLM, toolGW, r.experienceProvider, r.idGen, r.promptProvider, currentCfg, hookMgr, compressor)
 		stepResult := reactExec.RunStep(ctx, stepCtx, nextStep)
 
 		exec := StepExecution{
@@ -633,19 +663,23 @@ func (r *Runtime) buildResult(
 		Reflections:     taskCtx.Reflections,
 		Audits:          taskCtx.Audits,
 		Corrections:     taskCtx.Corrections,
-		ExperienceUsage: taskCtx.ExperienceUsage,
-		ConfigChanges:   taskCtx.ConfigChanges,
+		ExperienceUsage:    taskCtx.ExperienceUsage,
+		ConfigChanges:      taskCtx.ConfigChanges,
+		CompressionRecords: taskCtx.CompressionRecords,
+		ContextBudget:      taskCtx.ContextBudget,
 		Metrics: RuntimeMetrics{
-			TotalTurns:         limiters.TotalTurns(),
-			TotalToolCalls:     limiters.ToolCalls(),
-			TotalModelCalls:    limiters.ModelCalls(),
-			TotalToolFailures:  limiters.ToolFailures(),
-			TotalModelFailures: limiters.ModelFailures(),
-			TotalParseFailures: limiters.ParseFailures(),
-			TotalAudits:        limiters.Audits(),
-			TotalReflections:   limiters.Reflections(),
-			TotalCorrections:   limiters.Corrections(),
-			TotalDuration:      taskCtx.EndedAt.Sub(taskCtx.StartedAt),
+			TotalTurns:           limiters.TotalTurns(),
+			TotalToolCalls:       limiters.ToolCalls(),
+			TotalModelCalls:      limiters.ModelCalls(),
+			TotalToolFailures:    limiters.ToolFailures(),
+			TotalModelFailures:   limiters.ModelFailures(),
+			TotalParseFailures:   limiters.ParseFailures(),
+			TotalAudits:          limiters.Audits(),
+			TotalReflections:     limiters.Reflections(),
+			TotalCorrections:     limiters.Corrections(),
+			TotalPromptTokens:    taskCtx.TotalPromptTokens,
+			TotalCompletionTokens: taskCtx.TotalCompletionTokens,
+			TotalDuration:        taskCtx.EndedAt.Sub(taskCtx.StartedAt),
 		},
 		StartedAt: taskCtx.StartedAt,
 		EndedAt:   taskCtx.EndedAt,
@@ -676,17 +710,19 @@ func (c *recordingLLMClient) Complete(ctx context.Context, req LLMRequest) (LLMR
 	}
 
 	record := ModelCallRecord{
-		CallID:        req.CallID,
-		TaskID:        req.TaskID,
-		StepID:        req.StepID,
-		Purpose:       req.Purpose,
-		InputSummary:  summarizeMessages(req.Messages),
-		OutputSummary: textutil.Truncate(resp.Content, 8000),
-		Schema:        req.ResponseSchema,
-		Model:         resp.Model,
-		TokensUsed:    resp.Usage.TotalTokens,
-		Latency:       ended.Sub(started),
-		OccurredAt:    started,
+		CallID:           req.CallID,
+		TaskID:           req.TaskID,
+		StepID:           req.StepID,
+		Purpose:          req.Purpose,
+		InputSummary:     summarizeMessages(req.Messages),
+		OutputSummary:    textutil.Truncate(resp.Content, 8000),
+		Schema:           req.ResponseSchema,
+		Model:            resp.Model,
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		TokensUsed:       resp.Usage.TotalTokens,
+		Latency:          ended.Sub(started),
+		OccurredAt:       started,
 	}
 	if err != nil {
 		record.Error = err.Error()
@@ -710,6 +746,8 @@ func (c *recordingLLMClient) Complete(ctx context.Context, req LLMRequest) (LLMR
 	c.taskCtx.BatchUpdate(func() {
 		c.taskCtx.ModelCalls = append(c.taskCtx.ModelCalls, record)
 		c.taskCtx.Counters = countersFromLimiter(c.limits)
+		c.taskCtx.TotalPromptTokens += resp.Usage.PromptTokens
+		c.taskCtx.TotalCompletionTokens += resp.Usage.CompletionTokens
 		if err != nil {
 			c.taskCtx.Errors = append(c.taskCtx.Errors, RuntimeError{
 				ErrorID:     c.idGen.Generate(),

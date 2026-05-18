@@ -60,6 +60,7 @@ const (
 	ExitToolUnavailable         ExitReason = "tool_unavailable"
 	ExitModelUnavailable        ExitReason = "model_unavailable"
 	ExitSystemError             ExitReason = "system_error"
+	ExitContextOverflow         ExitReason = "context_overflow"
 )
 
 type RiskLevel string
@@ -137,9 +138,12 @@ const (
 	HookCorrectionApplied  HookEventType = "correction_applied"
 	HookStepRetrying       HookEventType = "step_retrying"
 	HookStepSkipped        HookEventType = "step_skipped"
-	HookConfigChanged      HookEventType = "config_changed"
-	HookTaskInterrupted    HookEventType = "task_interrupted"
-	HookTaskFinished       HookEventType = "task_finished"
+	HookConfigChanged            HookEventType = "config_changed"
+	HookTaskInterrupted          HookEventType = "task_interrupted"
+	HookTaskFinished             HookEventType = "task_finished"
+	HookContextBudgetChecked     HookEventType = "context_budget_checked"
+	HookContextCompressed        HookEventType = "context_compressed"
+	HookContextCompressionFailed HookEventType = "context_compression_failed"
 )
 
 type LLMPurpose string
@@ -151,6 +155,18 @@ const (
 	PurposeReflect   LLMPurpose = "reflect"
 	PurposeCorrect   LLMPurpose = "correct"
 	PurposeSummarize LLMPurpose = "summarize"
+	PurposeCompress  LLMPurpose = "compress"
+)
+
+// CompressionStrategy identifies the type of context compression applied.
+type CompressionStrategy string
+
+const (
+	StrategyToolResults     CompressionStrategy = "tool_results"
+	StrategyHistoricalSteps CompressionStrategy = "historical_steps"
+	StrategyLLMPriorTurns   CompressionStrategy = "llm_prior_turns"
+	StrategyPreflight       CompressionStrategy = "preflight"
+	StrategyEmergency       CompressionStrategy = "emergency"
 )
 
 type ToolCallStatus string
@@ -268,18 +284,20 @@ type ExitDecision struct {
 }
 
 type ModelCallRecord struct {
-	CallID        string        `json:"call_id"`
-	TaskID        string        `json:"task_id"`
-	StepID        string        `json:"step_id,omitempty"`
-	Purpose       LLMPurpose    `json:"purpose"`
-	InputSummary  string        `json:"input_summary"`
-	OutputSummary string        `json:"output_summary"`
-	Schema        string        `json:"schema,omitempty"`
-	Model         string        `json:"model,omitempty"`
-	TokensUsed    int           `json:"tokens_used,omitempty"`
-	Latency       time.Duration `json:"latency"`
-	Error         string        `json:"error,omitempty"`
-	OccurredAt    time.Time     `json:"occurred_at"`
+	CallID           string        `json:"call_id"`
+	TaskID           string        `json:"task_id"`
+	StepID           string        `json:"step_id,omitempty"`
+	Purpose          LLMPurpose    `json:"purpose"`
+	InputSummary     string        `json:"input_summary"`
+	OutputSummary    string        `json:"output_summary"`
+	Schema           string        `json:"schema,omitempty"`
+	Model            string        `json:"model,omitempty"`
+	PromptTokens     int           `json:"prompt_tokens,omitempty"`
+	CompletionTokens int           `json:"completion_tokens,omitempty"`
+	TokensUsed       int           `json:"tokens_used,omitempty"`
+	Latency          time.Duration `json:"latency"`
+	Error            string        `json:"error,omitempty"`
+	OccurredAt       time.Time     `json:"occurred_at"`
 }
 
 type ConfigChange struct {
@@ -476,42 +494,73 @@ type CompletionSummary struct {
 	Recommendations []string `json:"recommendations,omitempty"`
 }
 
+// CompressionRecord documents a single compression event during task execution.
+type CompressionRecord struct {
+	CompressionID string            `json:"compression_id"`
+	TaskID        string            `json:"task_id"`
+	StepID        string            `json:"step_id,omitempty"`
+	Strategy      CompressionStrategy `json:"strategy"`
+	TriggerRatio  float64           `json:"trigger_ratio"`
+	BeforeTokens  int               `json:"before_tokens"`
+	AfterTokens   int               `json:"after_tokens"`
+	CompressedRef []string          `json:"compressed_ref,omitempty"`
+	Summary       string            `json:"summary"`
+	ModelCallID   string            `json:"model_call_id,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+}
+
+// ContextBudgetSnapshot captures the context budget state at a point in time.
+type ContextBudgetSnapshot struct {
+	MaxContextTokens      int     `json:"max_context_tokens"`
+	ReservedOutputTokens  int     `json:"reserved_output_tokens"`
+	EstimatedPromptTokens int     `json:"estimated_prompt_tokens"`
+	ContextRatio          float64 `json:"context_ratio"`
+	PromptTokensObserved  int     `json:"prompt_tokens_observed"`
+	CompletionTokens      int     `json:"completion_tokens"`
+	TotalTokens           int     `json:"total_tokens"`
+	CompressionCount      int     `json:"compression_count"`
+}
+
 type RuntimeMetrics struct {
-	TotalTurns         int           `json:"total_turns"`
-	TotalToolCalls     int           `json:"total_tool_calls"`
-	TotalModelCalls    int           `json:"total_model_calls"`
-	TotalToolFailures  int           `json:"total_tool_failures"`
-	TotalModelFailures int           `json:"total_model_failures"`
-	TotalParseFailures int           `json:"total_parse_failures"`
-	TotalAudits        int           `json:"total_audits"`
-	TotalReflections   int           `json:"total_reflections"`
-	TotalCorrections   int           `json:"total_corrections"`
-	TotalDuration      time.Duration `json:"total_duration"`
-	ModelCallDuration  time.Duration `json:"model_call_duration"`
-	ToolCallDuration   time.Duration `json:"tool_call_duration"`
+	TotalTurns           int           `json:"total_turns"`
+	TotalToolCalls       int           `json:"total_tool_calls"`
+	TotalModelCalls      int           `json:"total_model_calls"`
+	TotalToolFailures    int           `json:"total_tool_failures"`
+	TotalModelFailures   int           `json:"total_model_failures"`
+	TotalParseFailures   int           `json:"total_parse_failures"`
+	TotalAudits          int           `json:"total_audits"`
+	TotalReflections     int           `json:"total_reflections"`
+	TotalCorrections     int           `json:"total_corrections"`
+	TotalPromptTokens    int           `json:"total_prompt_tokens"`
+	TotalCompletionTokens int          `json:"total_completion_tokens"`
+	TotalDuration        time.Duration `json:"total_duration"`
+	ModelCallDuration    time.Duration `json:"model_call_duration"`
+	ToolCallDuration     time.Duration `json:"tool_call_duration"`
 }
 
 type TaskResult struct {
-	TaskID          string             `json:"task_id"`
-	Status          TaskStatus         `json:"status"`
-	ExitReason      ExitReason         `json:"exit_reason"`
-	FinalAnswer     string             `json:"final_answer"`
-	Completion      CompletionSummary  `json:"completion"`
-	InitialPlan     *Plan              `json:"initial_plan,omitempty"`
-	FinalPlan       *Plan              `json:"final_plan,omitempty"`
-	StepExecutions  []StepExecution    `json:"step_executions"`
-	ToolCalls       []ToolCallRecord   `json:"tool_calls"`
-	ModelCalls      []ModelCallRecord  `json:"model_calls"`
-	Errors          []RuntimeError     `json:"errors"`
-	Reflections     []ReflectionResult `json:"reflections"`
-	Audits          []AuditResult      `json:"audits"`
-	Corrections     []CorrectionResult `json:"corrections"`
-	ExperienceUsage []ExperienceUsage  `json:"experience_usage,omitempty"`
-	ConfigChanges   []ConfigChange     `json:"config_changes,omitempty"`
-	Metrics         RuntimeMetrics     `json:"metrics"`
-	StartedAt       time.Time          `json:"started_at"`
-	EndedAt         time.Time          `json:"ended_at"`
-	Metadata        map[string]string  `json:"metadata,omitempty"`
+	TaskID             string               `json:"task_id"`
+	Status             TaskStatus           `json:"status"`
+	ExitReason         ExitReason           `json:"exit_reason"`
+	FinalAnswer        string               `json:"final_answer"`
+	Completion         CompletionSummary    `json:"completion"`
+	InitialPlan        *Plan                `json:"initial_plan,omitempty"`
+	FinalPlan          *Plan                `json:"final_plan,omitempty"`
+	StepExecutions     []StepExecution      `json:"step_executions"`
+	ToolCalls          []ToolCallRecord     `json:"tool_calls"`
+	ModelCalls         []ModelCallRecord    `json:"model_calls"`
+	Errors             []RuntimeError       `json:"errors"`
+	Reflections        []ReflectionResult   `json:"reflections"`
+	Audits             []AuditResult        `json:"audits"`
+	Corrections        []CorrectionResult   `json:"corrections"`
+	ExperienceUsage    []ExperienceUsage    `json:"experience_usage,omitempty"`
+	ConfigChanges      []ConfigChange       `json:"config_changes,omitempty"`
+	CompressionRecords []CompressionRecord  `json:"compression_records,omitempty"`
+	ContextBudget      *ContextBudgetSnapshot `json:"context_budget,omitempty"`
+	Metrics            RuntimeMetrics       `json:"metrics"`
+	StartedAt          time.Time            `json:"started_at"`
+	EndedAt            time.Time            `json:"ended_at"`
+	Metadata           map[string]string    `json:"metadata,omitempty"`
 }
 
 func (tr *TaskResult) ToJSON() ([]byte, error) {
@@ -551,6 +600,16 @@ type RuntimeConfig struct {
 	AllowDangerousTools   bool          `json:"allow_dangerous_tools"`
 	DisabledTools         []string      `json:"disabled_tools,omitempty"`
 	FailOnHookError       bool          `json:"fail_on_hook_error"`
+
+	// Context budget and compression settings
+	MaxContextTokens       int     `json:"max_context_tokens"`
+	ReservedOutputTokens   int     `json:"reserved_output_tokens"`
+	EnableContextCompress  bool    `json:"enable_context_compress"`
+	ToolCompressRatio      float64 `json:"tool_compress_ratio"`
+	StepCompressRatio      float64 `json:"step_compress_ratio"`
+	LLMCompressRatio       float64 `json:"llm_compress_ratio"`
+	CompressTargetRatio    float64 `json:"compress_target_ratio"`
+	RecentTurnsToKeep      int     `json:"recent_turns_to_keep"`
 }
 
 func DefaultConfig() RuntimeConfig {
@@ -565,6 +624,10 @@ func DefaultConfig() RuntimeConfig {
 		MaxAudits: 5, MaxCorrections: 3, MaxReflections: 5, MaxStepRetries: 2,
 		AllowDynamicNewSteps: true, AllowSkipFailedStep: true,
 		AllowBestEffortAnswer: true,
+		MaxContextTokens: 256000, ReservedOutputTokens: 8192,
+		EnableContextCompress: true, ToolCompressRatio: 0.70,
+		StepCompressRatio: 0.80, LLMCompressRatio: 0.95,
+		CompressTargetRatio: 0.60, RecentTurnsToKeep: 6,
 	}
 }
 
@@ -623,23 +686,52 @@ func (c RuntimeConfig) Validate() error {
 	if c.MaxStepRetries < 0 {
 		return fmt.Errorf("config: MaxStepRetries must be >= 0, got %d", c.MaxStepRetries)
 	}
+	// Context budget validation
+	if c.MaxContextTokens > 0 {
+		if c.ReservedOutputTokens < 0 {
+			return fmt.Errorf("config: ReservedOutputTokens must be >= 0, got %d", c.ReservedOutputTokens)
+		}
+		if c.ToolCompressRatio < 0 || c.ToolCompressRatio > 1 {
+			return fmt.Errorf("config: ToolCompressRatio must be in [0,1], got %f", c.ToolCompressRatio)
+		}
+		if c.StepCompressRatio < 0 || c.StepCompressRatio > 1 {
+			return fmt.Errorf("config: StepCompressRatio must be in [0,1], got %f", c.StepCompressRatio)
+		}
+		if c.LLMCompressRatio < 0 || c.LLMCompressRatio > 1 {
+			return fmt.Errorf("config: LLMCompressRatio must be in [0,1], got %f", c.LLMCompressRatio)
+		}
+		if c.CompressTargetRatio < 0 || c.CompressTargetRatio > 1 {
+			return fmt.Errorf("config: CompressTargetRatio must be in [0,1], got %f", c.CompressTargetRatio)
+		}
+		if c.RecentTurnsToKeep < 0 {
+			return fmt.Errorf("config: RecentTurnsToKeep must be >= 0, got %d", c.RecentTurnsToKeep)
+		}
+	}
 	return nil
 }
 
 type ConfigPatch struct {
-	MaxTotalTurns       *int           `json:"max_total_turns,omitempty"`
-	MaxPlanSteps        *int           `json:"max_plan_steps,omitempty"`
-	MaxStepReactTurns   *int           `json:"max_step_react_turns,omitempty"`
-	MaxToolCalls        *int           `json:"max_tool_calls,omitempty"`
-	MaxToolCallsPerStep *int           `json:"max_tool_calls_per_step,omitempty"`
-	TaskTimeout         *time.Duration `json:"task_timeout,omitempty"`
-	ModelTimeout        *time.Duration `json:"model_timeout,omitempty"`
-	ToolTimeout         *time.Duration `json:"tool_timeout,omitempty"`
-	EnableReflection    *bool          `json:"enable_reflection,omitempty"`
-	EnableAudit         *bool          `json:"enable_audit,omitempty"`
-	EnableCorrection    *bool          `json:"enable_correction,omitempty"`
-	MaxStepRetries      *int           `json:"max_step_retries,omitempty"`
-	DisabledTools       []string       `json:"disabled_tools,omitempty"`
+	MaxTotalTurns        *int           `json:"max_total_turns,omitempty"`
+	MaxPlanSteps         *int           `json:"max_plan_steps,omitempty"`
+	MaxStepReactTurns    *int           `json:"max_step_react_turns,omitempty"`
+	MaxToolCalls         *int           `json:"max_tool_calls,omitempty"`
+	MaxToolCallsPerStep  *int           `json:"max_tool_calls_per_step,omitempty"`
+	TaskTimeout          *time.Duration `json:"task_timeout,omitempty"`
+	ModelTimeout         *time.Duration `json:"model_timeout,omitempty"`
+	ToolTimeout          *time.Duration `json:"tool_timeout,omitempty"`
+	EnableReflection     *bool          `json:"enable_reflection,omitempty"`
+	EnableAudit          *bool          `json:"enable_audit,omitempty"`
+	EnableCorrection     *bool          `json:"enable_correction,omitempty"`
+	MaxStepRetries       *int           `json:"max_step_retries,omitempty"`
+	DisabledTools        []string       `json:"disabled_tools,omitempty"`
+	MaxContextTokens     *int           `json:"max_context_tokens,omitempty"`
+	ReservedOutputTokens *int           `json:"reserved_output_tokens,omitempty"`
+	EnableContextCompress *bool         `json:"enable_context_compress,omitempty"`
+	ToolCompressRatio    *float64       `json:"tool_compress_ratio,omitempty"`
+	StepCompressRatio    *float64       `json:"step_compress_ratio,omitempty"`
+	LLMCompressRatio     *float64       `json:"llm_compress_ratio,omitempty"`
+	CompressTargetRatio  *float64       `json:"compress_target_ratio,omitempty"`
+	RecentTurnsToKeep    *int           `json:"recent_turns_to_keep,omitempty"`
 }
 
 func (c RuntimeConfig) ApplyPatch(patch ConfigPatch) RuntimeConfig {
@@ -682,6 +774,30 @@ func (c RuntimeConfig) ApplyPatch(patch ConfigPatch) RuntimeConfig {
 	}
 	if patch.DisabledTools != nil {
 		result.DisabledTools = patch.DisabledTools
+	}
+	if patch.MaxContextTokens != nil {
+		result.MaxContextTokens = *patch.MaxContextTokens
+	}
+	if patch.ReservedOutputTokens != nil {
+		result.ReservedOutputTokens = *patch.ReservedOutputTokens
+	}
+	if patch.EnableContextCompress != nil {
+		result.EnableContextCompress = *patch.EnableContextCompress
+	}
+	if patch.ToolCompressRatio != nil {
+		result.ToolCompressRatio = *patch.ToolCompressRatio
+	}
+	if patch.StepCompressRatio != nil {
+		result.StepCompressRatio = *patch.StepCompressRatio
+	}
+	if patch.LLMCompressRatio != nil {
+		result.LLMCompressRatio = *patch.LLMCompressRatio
+	}
+	if patch.CompressTargetRatio != nil {
+		result.CompressTargetRatio = *patch.CompressTargetRatio
+	}
+	if patch.RecentTurnsToKeep != nil {
+		result.RecentTurnsToKeep = *patch.RecentTurnsToKeep
 	}
 	return result
 }

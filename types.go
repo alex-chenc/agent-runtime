@@ -64,6 +64,7 @@ const (
 	ExitToolUnavailable         = core.ExitToolUnavailable
 	ExitModelUnavailable        = core.ExitModelUnavailable
 	ExitSystemError             = core.ExitSystemError
+	ExitContextOverflow         = core.ExitContextOverflow
 )
 
 const (
@@ -129,9 +130,12 @@ const (
 	HookCorrectionApplied  = core.HookCorrectionApplied
 	HookStepRetrying       = core.HookStepRetrying
 	HookStepSkipped        = core.HookStepSkipped
-	HookConfigChanged      = core.HookConfigChanged
-	HookTaskInterrupted    = core.HookTaskInterrupted
-	HookTaskFinished       = core.HookTaskFinished
+	HookConfigChanged            = core.HookConfigChanged
+	HookTaskInterrupted          = core.HookTaskInterrupted
+	HookTaskFinished             = core.HookTaskFinished
+	HookContextBudgetChecked     = core.HookContextBudgetChecked
+	HookContextCompressed        = core.HookContextCompressed
+	HookContextCompressionFailed = core.HookContextCompressionFailed
 )
 
 const (
@@ -141,6 +145,7 @@ const (
 	PurposeReflect   = core.PurposeReflect
 	PurposeCorrect   = core.PurposeCorrect
 	PurposeSummarize = core.PurposeSummarize
+	PurposeCompress  = core.PurposeCompress
 )
 
 const (
@@ -179,3 +184,8 @@ const (
 type ModelCallRecord = core.ModelCallRecord
 type ConfigChange = core.ConfigChange
 type TimelineEvent = core.TimelineEvent
+
+// Context budget types
+type CompressionStrategy = core.CompressionStrategy
+type CompressionRecord = core.CompressionRecord
+type ContextBudgetSnapshot = core.ContextBudgetSnapshot
