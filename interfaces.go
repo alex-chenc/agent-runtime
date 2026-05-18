@@ -9,6 +9,8 @@ type LLMRequest = core.LLMRequest
 type LLMMessage = core.LLMMessage
 type LLMResponse = core.LLMResponse
 type LLMUsage = core.LLMUsage
+type ResponseFormat = core.ResponseFormat
+type ResponseFormatSchema = core.ResponseFormatSchema
 
 type ToolGateway = core.ToolGateway
 type ToolRequest = core.ToolRequest

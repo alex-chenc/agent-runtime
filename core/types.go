@@ -424,6 +424,22 @@ type LLMMessage struct {
 	Content string `json:"content"`
 }
 
+// ResponseFormat specifies the desired output format for LLM calls.
+// Used to request structured JSON output from providers that support it
+// (e.g., DashScope/Bailian, OpenAI).
+type ResponseFormat struct {
+	Type       string                `json:"type"`
+	JSONSchema *ResponseFormatSchema `json:"json_schema,omitempty"`
+}
+
+// ResponseFormatSchema defines a JSON Schema for structured output.
+type ResponseFormatSchema struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Schema      json.RawMessage `json:"schema,omitempty"`
+	Strict      bool            `json:"strict,omitempty"`
+}
+
 type LLMUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
@@ -683,6 +699,7 @@ type LLMRequest struct {
 	Purpose        LLMPurpose        `json:"purpose"`
 	Messages       []LLMMessage      `json:"messages"`
 	ResponseSchema string            `json:"response_schema,omitempty"`
+	ResponseFormat *ResponseFormat   `json:"response_format,omitempty"`
 	Temperature    *float32          `json:"temperature,omitempty"`
 	Timeout        time.Duration     `json:"timeout"`
 	Metadata       map[string]string `json:"metadata,omitempty"`

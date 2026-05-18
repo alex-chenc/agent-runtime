@@ -1,6 +1,8 @@
 package core
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -115,5 +117,70 @@ func TestStepStatusConstants(t *testing.T) {
 			t.Errorf("duplicate StepStatus value: %q", s)
 		}
 		seen[s] = true
+	}
+}
+
+func TestResponseFormat_JSONMarshal(t *testing.T) {
+	rf := &ResponseFormat{Type: "json_object"}
+	data, err := json.Marshal(rf)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(data), `"type":"json_object"`) {
+		t.Errorf("expected type json_object in output, got: %s", data)
+	}
+	if strings.Contains(string(data), "json_schema") {
+		t.Errorf("json_schema should be omitted when nil, got: %s", data)
+	}
+}
+
+func TestResponseFormat_WithSchema(t *testing.T) {
+	rf := &ResponseFormat{
+		Type: "json_schema",
+		JSONSchema: &ResponseFormatSchema{
+			Name:   "plan_output",
+			Schema: json.RawMessage(`{"type":"object","properties":{"goal":{"type":"string"}}}`),
+		},
+	}
+	data, err := json.Marshal(rf)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(data), `"type":"json_schema"`) {
+		t.Errorf("expected json_schema type, got: %s", data)
+	}
+	if !strings.Contains(string(data), `"name":"plan_output"`) {
+		t.Errorf("expected schema name, got: %s", data)
+	}
+}
+
+func TestLLMRequest_ResponseFormatOmitempty(t *testing.T) {
+	req := LLMRequest{
+		TaskID:   "test",
+		Purpose:  PurposePlan,
+		Messages: []LLMMessage{{Role: "user", Content: "test"}},
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if strings.Contains(string(data), "response_format") {
+		t.Errorf("response_format should be omitted when nil, got: %s", data)
+	}
+}
+
+func TestLLMRequest_WithResponseFormat(t *testing.T) {
+	req := LLMRequest{
+		TaskID:         "test",
+		Purpose:        PurposePlan,
+		Messages:       []LLMMessage{{Role: "user", Content: "test json"}},
+		ResponseFormat: &ResponseFormat{Type: "json_object"},
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(data), `"response_format":{"type":"json_object"}`) {
+		t.Errorf("expected response_format in output, got: %s", data)
 	}
 }
