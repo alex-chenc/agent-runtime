@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/chenchen511/agent-runtime/core"
-	"github.com/chenchen511/agent-runtime/internal/textutil"
+	"github.com/alex-chenc/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/internal/textutil"
 )
 
 type correctionJSON struct {

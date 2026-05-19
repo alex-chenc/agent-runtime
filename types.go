@@ -1,6 +1,6 @@
 package agentruntime
 
-import "github.com/chenchen511/agent-runtime/core"
+import "github.com/alex-chenc/agent-runtime/core"
 
 // Re-export all enum types from core for backward-compatible public API.
 

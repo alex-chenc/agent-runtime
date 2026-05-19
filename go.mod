@@ -1,3 +1,3 @@
-module github.com/chenchen511/agent-runtime
+module github.com/alex-chenc/agent-runtime
 
 go 1.24.4

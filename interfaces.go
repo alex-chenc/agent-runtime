@@ -1,6 +1,6 @@
 package agentruntime
 
-import "github.com/chenchen511/agent-runtime/core"
+import "github.com/alex-chenc/agent-runtime/core"
 
 // Re-export all interfaces and their request/response types from core.
 

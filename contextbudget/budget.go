@@ -1,7 +1,7 @@
 package contextbudget
 
 import (
-	"github.com/chenchen511/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/core"
 )
 
 // BudgetCalculator computes the context budget snapshot for a set of messages.

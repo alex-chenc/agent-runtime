@@ -1,6 +1,6 @@
 package agentruntime
 
-import "github.com/chenchen511/agent-runtime/core"
+import "github.com/alex-chenc/agent-runtime/core"
 
 // RuntimeConfig holds all configuration for a Runtime instance.
 type RuntimeConfig = core.RuntimeConfig

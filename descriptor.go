@@ -1,6 +1,6 @@
 package agentruntime
 
-import "github.com/chenchen511/agent-runtime/core"
+import "github.com/alex-chenc/agent-runtime/core"
 
 // ToolDescriptor describes a tool that can be called by the agent.
 type ToolDescriptor = core.ToolDescriptor

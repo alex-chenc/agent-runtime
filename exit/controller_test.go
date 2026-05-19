@@ -3,8 +3,8 @@ package exit
 import (
 	"testing"
 
-	"github.com/chenchen511/agent-runtime/core"
-	"github.com/chenchen511/agent-runtime/internal/limiter"
+	"github.com/alex-chenc/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/internal/limiter"
 )
 
 func newLimiter() *limiter.Limiter {

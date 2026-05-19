@@ -3,7 +3,7 @@ package apperr
 import (
 	"testing"
 
-	"github.com/chenchen511/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/core"
 )
 
 func TestManager_Add(t *testing.T) {

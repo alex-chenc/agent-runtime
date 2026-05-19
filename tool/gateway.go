@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/chenchen511/agent-runtime/core"
-	"github.com/chenchen511/agent-runtime/internal/ids"
+	"github.com/alex-chenc/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/internal/ids"
 )
 
 // GatewayWrapper wraps an core.ToolGateway with pre-call validation.

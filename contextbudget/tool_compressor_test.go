@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chenchen511/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/core"
 )
 
 func TestToolCompressor_QueryHistoricalLogs_JSON(t *testing.T) {

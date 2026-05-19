@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chenchen511/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/core"
 )
 
 // LLMSummarizer compresses older conversation turns using an LLM call.

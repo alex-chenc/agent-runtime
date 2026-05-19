@@ -1,8 +1,8 @@
 package exit
 
 import (
-	"github.com/chenchen511/agent-runtime/core"
-	"github.com/chenchen511/agent-runtime/internal/limiter"
+	"github.com/alex-chenc/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/internal/limiter"
 )
 
 // Controller checks exit conditions at key points in the task lifecycle.

@@ -3,7 +3,7 @@ package apperr
 import (
 	"time"
 
-	"github.com/chenchen511/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/core"
 )
 
 // New creates a new RuntimeError with the given parameters.

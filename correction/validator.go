@@ -3,7 +3,7 @@ package correction
 import (
 	"fmt"
 
-	"github.com/chenchen511/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/core"
 )
 
 // ValidateCorrection checks if a correction is safe to apply.

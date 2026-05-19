@@ -1,7 +1,7 @@
 package contextbudget
 
 import (
-	"github.com/chenchen511/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/core"
 )
 
 // TokenEstimator estimates the number of tokens in messages or text.

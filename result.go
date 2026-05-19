@@ -1,8 +1,8 @@
 package agentruntime
 
 import (
-	"github.com/chenchen511/agent-runtime/core"
-	"github.com/chenchen511/agent-runtime/task"
+	"github.com/alex-chenc/agent-runtime/core"
+	"github.com/alex-chenc/agent-runtime/task"
 )
 
 // Re-export all result/data types from core.
