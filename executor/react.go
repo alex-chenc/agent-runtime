@@ -294,6 +294,21 @@ func (e *ReActExecutor) callLLM(ctx context.Context, taskCtx *StepContext, step 
 		}
 	}
 
+	// Emit budget snapshot after compression so the frontend sees updated usage
+	if e.compressor != nil && e.hookMgr != nil {
+		snap := e.compressor.GetBudgetSnapshot(messages)
+		e.hookMgr.EmitAsync(ctx, core.HookEvent{
+			Type:      core.HookContextBudgetChecked,
+			TaskID:    taskCtx.TaskID,
+			StepID:    step.StepID,
+			CreatedAt: time.Now(),
+			Snapshot: &core.TaskSnapshot{
+				TaskID:        taskCtx.TaskID,
+				ContextBudget: &snap,
+			},
+		})
+	}
+
 	timeout := e.config.ModelTimeout
 	if dl, ok := ctx.Deadline(); ok {
 		remaining := time.Until(dl)
