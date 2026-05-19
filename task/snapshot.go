@@ -50,6 +50,7 @@ func (c *Context) Snapshot() *core.TaskSnapshot {
 		TotalToolCalls:  c.Counters.ToolCalls,
 		TotalModelCalls: c.Counters.ModelCalls,
 		RecentErrors:    errCopy,
+		ContextBudget:   c.ContextBudget,
 		StartedAt:       c.StartedAt,
 		Metadata:        metaCopy,
 	}
