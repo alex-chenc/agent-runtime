@@ -856,6 +856,12 @@ func parseFinalAnswer(content string) string {
 	if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
 		return ""
 	}
+	if raw.FinalAnswer == "" {
+		// LLM returned structured JSON (e.g. attack_graph + conclusions)
+		// without a final_answer field. Preserve the full JSON so the
+		// caller can extract structured data from it.
+		return jsonStr
+	}
 	return strings.TrimSpace(raw.FinalAnswer)
 }
 

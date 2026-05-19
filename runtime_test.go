@@ -585,3 +585,41 @@ func TestReflectionRetryStepMaxRetries(t *testing.T) {
 		t.Logf("status = %q (best effort)", result.Status)
 	}
 }
+
+func TestParseFinalAnswer(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "standard final_answer JSON",
+			input: `{"final_answer":"analysis complete"}`,
+			want:  "analysis complete",
+		},
+		{
+			name:  "plain text",
+			input: "analysis complete",
+			want:  "analysis complete",
+		},
+		{
+			name:  "structured JSON without final_answer field",
+			input: `{"attack_graph":{"nodes":[],"edges":[]},"conclusions":[{"action":"confirm_threat"}]}`,
+			want:  `{"attack_graph":{"nodes":[],"edges":[]},"conclusions":[{"action":"confirm_threat"}]}`,
+		},
+		{
+			name:  "empty final_answer falls through to raw JSON",
+			input: `{"final_answer":""}`,
+			want:  `{"final_answer":""}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseFinalAnswer(tt.input)
+			if got != tt.want {
+				t.Errorf("parseFinalAnswer(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
