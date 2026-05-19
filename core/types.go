@@ -257,9 +257,10 @@ type TaskSnapshot struct {
 	FailedSteps     int               `json:"failed_steps"`
 	TotalToolCalls  int               `json:"total_tool_calls"`
 	TotalModelCalls int               `json:"total_model_calls"`
-	RecentErrors    []RuntimeError    `json:"recent_errors,omitempty"`
-	StartedAt       time.Time         `json:"started_at"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	RecentErrors    []RuntimeError         `json:"recent_errors,omitempty"`
+	ContextBudget   *ContextBudgetSnapshot `json:"context_budget,omitempty"`
+	StartedAt       time.Time              `json:"started_at"`
+	Metadata        map[string]string      `json:"metadata,omitempty"`
 }
 
 type RuntimeError struct {
