@@ -67,6 +67,14 @@ func WithToolPolicy(policy ToolPolicy) Option {
 	}
 }
 
+// WithRouter sets a custom task router for intelligent prompt routing.
+func WithRouter(router TaskRouter) Option {
+	return func(r *Runtime) error {
+		r.router = router
+		return nil
+	}
+}
+
 // WithClock sets a custom clock for testability.
 func WithClock(clock Clock) Option {
 	return func(r *Runtime) error {

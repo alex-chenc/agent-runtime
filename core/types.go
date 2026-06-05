@@ -156,7 +156,46 @@ const (
 	PurposeCorrect   LLMPurpose = "correct"
 	PurposeSummarize LLMPurpose = "summarize"
 	PurposeCompress  LLMPurpose = "compress"
+	PurposeClassify  LLMPurpose = "classify" // 任务分类和提示词选择
 )
+
+// ===== Task Router Types =====
+
+// TaskAction 路由动作
+type TaskAction string
+
+const (
+	ActionDirectReply TaskAction = "direct_reply" // 直接回复（问候、闲聊）
+	ActionSimpleCall  TaskAction = "simple_call"   // 简单工具调用（跳过计划）
+	ActionFullPlan    TaskAction = "full_plan"      // 完整计划流程
+)
+
+// PromptFragment 提示词片段
+type PromptFragment struct {
+	Name        string   `json:"name"`        // 唯一名称
+	Description string   `json:"description"` // 功能描述（供 LLM 选择时参考）
+	Keywords    []string `json:"keywords"`    // 匹配关键词
+	Priority    int      `json:"priority"`    // 优先级（数字越大越靠前）
+	Content     string   `json:"content"`     // 提示词内容
+}
+
+// TaskClassification LLM 语义分析结果
+type TaskClassification struct {
+	TaskType   string     `json:"task_type"`   // greeting, query, analysis, investigation, remediation
+	Intent     string     `json:"intent"`      // 用户意图描述
+	Complexity string     `json:"complexity"`  // simple, moderate, complex
+	Action     TaskAction `json:"action"`      // 推荐动作
+	Fragments  []string   `json:"fragments"`   // 选中的片段名称列表
+	Reason     string     `json:"reason"`      // 判断原因
+}
+
+// RouteResult 路由结果
+type RouteResult struct {
+	Action          TaskAction          // 推荐动作
+	Classification  *TaskClassification // LLM 分类结果（规则匹配时为 nil）
+	SelectedFragments []string          // 选中的片段名称列表
+	ComposedPrompt  string              // 拼接后的完整提示词
+}
 
 // CompressionStrategy identifies the type of context compression applied.
 type CompressionStrategy string

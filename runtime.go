@@ -27,6 +27,19 @@ import (
 	"github.com/alex-chenc/agent-runtime/tool"
 )
 
+// TaskRouter 任务路由器接口（可选组件）
+type TaskRouter interface {
+	Route(ctx context.Context, input RouteInput) (*RouteResult, error)
+}
+
+// RouteInput 路由输入
+type RouteInput struct {
+	TaskID      string
+	UserMessage string
+	Tools       []ToolDescriptor
+	MaxSteps    int
+}
+
 // Runtime is the main entry point for executing agent tasks.
 type Runtime struct {
 	llmClient          LLMClient
@@ -39,6 +52,7 @@ type Runtime struct {
 	toolPolicy         ToolPolicy
 	clock              Clock
 	idGen              IDGenerator
+	router             TaskRouter // 可选：智能任务路由器
 
 	mu            sync.Mutex
 	activeTasks   map[string]*task.Context
@@ -250,35 +264,81 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 		AllowDangerous: cfg.AllowDangerousTools,
 	}
 
-	// 预评估：让 LLM 判断任务是否需要分步计划
-	assess, assessErr := p.Assess(ctx, planInput)
-
+	// 任务路由：Router 或 Assess
 	var initialPlan *core.Plan
-	if assessErr == nil && !assess.NeedsPlan {
-		// 简单任务：跳过计划生成，创建单步骤直接执行
-		initialPlan = p.GenerateNoPlan(planInput)
-		taskCtx.BatchUpdate(func() {
-			taskCtx.InitialPlan = initialPlan
-			taskCtx.CurrentPlan = initialPlan
+	var composedPrompt string
+
+	if r.router != nil {
+		// 使用 Router 进行智能路由
+		routeResult, routeErr := r.router.Route(ctx, RouteInput{
+			TaskID:      taskID,
+			UserMessage: input.UserInput,
+			Tools:       r.tools,
+			MaxSteps:    cfg.MaxPlanSteps,
 		})
-		hookMgr.EmitType(ctx, HookPlanCreated, taskID, taskCtx.Snapshot())
-	} else {
-		// 复杂任务：生成完整计划
-		var planErr error
-		initialPlan, planErr = p.Generate(ctx, planInput)
-		if planErr != nil {
-			exitReason := ExitPlanGenerationFailed
-			if reason, ok := r.exitReasonFromContext(ctx, taskCtx); ok {
-				exitReason = reason
+
+		if routeErr == nil && routeResult.Action == core.ActionDirectReply {
+			// 问候/闲聊：直接回复
+			return r.handleDirectReply(ctx, input, taskCtx, routeResult.ComposedPrompt, hookMgr, limiters, errMgr), nil
+		}
+
+		if routeErr == nil && routeResult.ComposedPrompt != "" {
+			composedPrompt = routeResult.ComposedPrompt
+		}
+
+		if routeErr == nil && routeResult.Action == core.ActionSimpleCall {
+			// 简单调用：跳过计划
+			initialPlan = p.GenerateNoPlan(planInput)
+		} else {
+			// 完整流程：生成计划
+			var planErr error
+			initialPlan, planErr = p.Generate(ctx, planInput)
+			if planErr != nil {
+				exitReason := ExitPlanGenerationFailed
+				if reason, ok := r.exitReasonFromContext(ctx, taskCtx); ok {
+					exitReason = reason
+				}
+				taskCtx.BatchUpdate(func() {
+					taskCtx.Status = StatusPlanFailed
+					taskCtx.ExitReason = exitReason
+					taskCtx.EndedAt = r.clock.Now()
+					taskCtx.Counters = countersFromLimiter(limiters)
+				})
+				errMgr.Add(apperr.New(ErrPlanGeneration, "planner", taskID, "", planErr.Error()))
+				return r.buildResult(taskCtx, nil, nil, limiters, errMgr), nil
 			}
-			taskCtx.BatchUpdate(func() {
-				taskCtx.Status = StatusPlanFailed
-				taskCtx.ExitReason = exitReason
-				taskCtx.EndedAt = r.clock.Now()
-				taskCtx.Counters = countersFromLimiter(limiters)
-			})
-			errMgr.Add(apperr.New(ErrPlanGeneration, "planner", taskID, "", planErr.Error()))
-			return r.buildResult(taskCtx, nil, nil, limiters, errMgr), nil
+		}
+	} else {
+		// 无 Router：使用原有 Assess 流程
+		assess, assessErr := p.Assess(ctx, planInput)
+		if assessErr == nil && !assess.NeedsPlan {
+			initialPlan = p.GenerateNoPlan(planInput)
+		} else {
+			var planErr error
+			initialPlan, planErr = p.Generate(ctx, planInput)
+			if planErr != nil {
+				exitReason := ExitPlanGenerationFailed
+				if reason, ok := r.exitReasonFromContext(ctx, taskCtx); ok {
+					exitReason = reason
+				}
+				taskCtx.BatchUpdate(func() {
+					taskCtx.Status = StatusPlanFailed
+					taskCtx.ExitReason = exitReason
+					taskCtx.EndedAt = r.clock.Now()
+					taskCtx.Counters = countersFromLimiter(limiters)
+				})
+				errMgr.Add(apperr.New(ErrPlanGeneration, "planner", taskID, "", planErr.Error()))
+				return r.buildResult(taskCtx, nil, nil, limiters, errMgr), nil
+			}
+		}
+	}
+
+	// 如果有 Router 拼接的提示词，包装 PromptProvider
+	effectiveProvider := r.promptProvider
+	if composedPrompt != "" {
+		effectiveProvider = &composedPromptProvider{
+			base:     r.promptProvider,
+			composed: composedPrompt,
 		}
 	}
 
@@ -359,7 +419,7 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 			Metadata:  input.Metadata,
 		}
 
-		reactExec := executor.NewReActExecutor(recordingLLM, toolGW, r.experienceProvider, r.idGen, r.promptProvider, currentCfg, hookMgr, compressor)
+		reactExec := executor.NewReActExecutor(recordingLLM, toolGW, r.experienceProvider, r.idGen, effectiveProvider, currentCfg, hookMgr, compressor)
 		stepResult := reactExec.RunStep(ctx, stepCtx, nextStep)
 
 		exec := StepExecution{
@@ -1213,4 +1273,76 @@ func (r *Runtime) handleRequestExperience(
 		})
 	}
 	return r.handleRetryStep(ctx, taskID, refl, step, planMgr, limiters, cfg, taskCtx, hookMgr)
+}
+
+// handleDirectReply 处理直接回复（问候、闲聊等不需要工具的场景）
+func (r *Runtime) handleDirectReply(
+	ctx context.Context,
+	input TaskInput,
+	taskCtx *task.Context,
+	composedPrompt string,
+	hookMgr *hook.Manager,
+	limiters *limiter.Limiter,
+	errMgr *apperr.Manager,
+) *TaskResult {
+	taskID := taskCtx.TaskID
+
+	taskCtx.BatchUpdate(func() {
+		taskCtx.Status = StatusRunning
+	})
+
+	// 使用拼接的提示词或默认提示词
+	systemPrompt := composedPrompt
+	if systemPrompt == "" {
+		systemPrompt = "你是 Aegis 智能安全助手。请用中文简洁地回复用户。"
+	}
+
+	timeout := taskCtx.ConfigSnapshot().ModelTimeout
+	if timeout == 0 {
+		timeout = 60 * time.Second
+	}
+
+	resp, err := r.llmClient.Complete(ctx, LLMRequest{
+		TaskID:  taskID,
+		Purpose: PurposeReact,
+		Messages: []LLMMessage{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: input.UserInput},
+		},
+		Timeout: timeout,
+	})
+
+	finalAnswer := ""
+	if err == nil {
+		finalAnswer = resp.Content
+	} else {
+		errMgr.Add(apperr.New(ErrModelCall, "direct_reply", taskID, "", err.Error()))
+		finalAnswer = "抱歉，我暂时无法回复。请稍后重试。"
+	}
+
+	taskCtx.BatchUpdate(func() {
+		taskCtx.Status = StatusCompleted
+		taskCtx.ExitReason = ExitNormalCompleted
+		taskCtx.FinalAnswer = finalAnswer
+		taskCtx.EndedAt = r.clock.Now()
+		taskCtx.Counters = countersFromLimiter(limiters)
+	})
+
+	return r.buildResult(taskCtx, nil, nil, limiters, errMgr)
+}
+
+// composedPromptProvider 包装 PromptProvider，用 Router 拼接的提示词覆盖 React 阶段
+type composedPromptProvider struct {
+	base     PromptProvider
+	composed string
+}
+
+func (p *composedPromptProvider) Build(ctx context.Context, req PromptRequest) (PromptBundle, error) {
+	if req.Purpose == PurposeReact && p.composed != "" {
+		return PromptBundle{SystemPrompt: p.composed}, nil
+	}
+	if p.base != nil {
+		return p.base.Build(ctx, req)
+	}
+	return PromptBundle{}, nil
 }

@@ -146,6 +146,19 @@ const (
 	PurposeCorrect   = core.PurposeCorrect
 	PurposeSummarize = core.PurposeSummarize
 	PurposeCompress  = core.PurposeCompress
+	PurposeClassify  = core.PurposeClassify
+)
+
+// Task Router types
+type TaskAction = core.TaskAction
+type PromptFragment = core.PromptFragment
+type TaskClassification = core.TaskClassification
+type RouteResult = core.RouteResult
+
+const (
+	ActionDirectReply = core.ActionDirectReply
+	ActionSimpleCall  = core.ActionSimpleCall
+	ActionFullPlan    = core.ActionFullPlan
 )
 
 const (
