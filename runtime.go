@@ -10,6 +10,7 @@ import (
 
 	"github.com/alex-chenc/agent-runtime/apperr"
 	"github.com/alex-chenc/agent-runtime/audit"
+	"github.com/alex-chenc/agent-runtime/core"
 	"github.com/alex-chenc/agent-runtime/contextbudget"
 	"github.com/alex-chenc/agent-runtime/correction"
 	"github.com/alex-chenc/agent-runtime/executor"
@@ -249,45 +250,68 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 		AllowDangerous: cfg.AllowDangerousTools,
 	}
 
-	initialPlan, err := p.Generate(ctx, planInput)
-	if err != nil {
-		exitReason := ExitPlanGenerationFailed
-		if reason, ok := r.exitReasonFromContext(ctx, taskCtx); ok {
-			exitReason = reason
-		}
+	// 预评估：让 LLM 判断任务是否需要分步计划
+	assess, assessErr := p.Assess(ctx, planInput)
+
+	var initialPlan *core.Plan
+	if assessErr == nil && !assess.NeedsPlan {
+		// 简单任务：跳过计划生成，创建单步骤直接执行
+		initialPlan = p.GenerateNoPlan(planInput)
 		taskCtx.BatchUpdate(func() {
-			taskCtx.Status = StatusPlanFailed
-			taskCtx.ExitReason = exitReason
-			taskCtx.EndedAt = r.clock.Now()
-			taskCtx.Counters = countersFromLimiter(limiters)
+			taskCtx.InitialPlan = initialPlan
+			taskCtx.CurrentPlan = initialPlan
 		})
-		errMgr.Add(apperr.New(ErrPlanGeneration, "planner", taskID, "", err.Error()))
-		return r.buildResult(taskCtx, nil, nil, limiters, errMgr), nil
+		hookMgr.EmitType(ctx, HookPlanCreated, taskID, taskCtx.Snapshot())
+	} else {
+		// 复杂任务：生成完整计划
+		var planErr error
+		initialPlan, planErr = p.Generate(ctx, planInput)
+		if planErr != nil {
+			exitReason := ExitPlanGenerationFailed
+			if reason, ok := r.exitReasonFromContext(ctx, taskCtx); ok {
+				exitReason = reason
+			}
+			taskCtx.BatchUpdate(func() {
+				taskCtx.Status = StatusPlanFailed
+				taskCtx.ExitReason = exitReason
+				taskCtx.EndedAt = r.clock.Now()
+				taskCtx.Counters = countersFromLimiter(limiters)
+			})
+			errMgr.Add(apperr.New(ErrPlanGeneration, "planner", taskID, "", planErr.Error()))
+			return r.buildResult(taskCtx, nil, nil, limiters, errMgr), nil
+		}
 	}
 
-	validation := planValidator.Validate(initialPlan)
-	if !validation.Valid {
-		errMsg := ""
-		for _, e := range validation.Errors {
-			errMsg += e + "; "
+	// 验证并设置计划（NeedsPlan=false 的情况已在上面处理）
+	if initialPlan.NeedsPlan {
+		validation := planValidator.Validate(initialPlan)
+		if !validation.Valid {
+			errMsg := ""
+			for _, e := range validation.Errors {
+				errMsg += e + "; "
+			}
+			taskCtx.BatchUpdate(func() {
+				taskCtx.Status = StatusPlanFailed
+				taskCtx.ExitReason = ExitPlanValidationFailed
+				taskCtx.EndedAt = r.clock.Now()
+				taskCtx.Counters = countersFromLimiter(limiters)
+			})
+			errMgr.Add(apperr.New(ErrPlanValidation, "planner", taskID, "", errMsg))
+			return r.buildResult(taskCtx, initialPlan, nil, limiters, errMgr), nil
 		}
-		taskCtx.BatchUpdate(func() {
-			taskCtx.Status = StatusPlanFailed
-			taskCtx.ExitReason = ExitPlanValidationFailed
-			taskCtx.EndedAt = r.clock.Now()
-			taskCtx.Counters = countersFromLimiter(limiters)
-		})
-		errMgr.Add(apperr.New(ErrPlanValidation, "planner", taskID, "", errMsg))
-		return r.buildResult(taskCtx, initialPlan, nil, limiters, errMgr), nil
-	}
 
-	planMgr.SetInitialPlan(initialPlan)
-	taskCtx.BatchUpdate(func() {
-		taskCtx.InitialPlan = initialPlan
-		taskCtx.CurrentPlan = initialPlan
-		taskCtx.Status = StatusRunning
-	})
-	hookMgr.EmitType(ctx, HookPlanCreated, taskID, taskCtx.Snapshot())
+		planMgr.SetInitialPlan(initialPlan)
+		taskCtx.BatchUpdate(func() {
+			taskCtx.InitialPlan = initialPlan
+			taskCtx.CurrentPlan = initialPlan
+			taskCtx.Status = StatusRunning
+		})
+		hookMgr.EmitType(ctx, HookPlanCreated, taskID, taskCtx.Snapshot())
+	} else {
+		// 简单任务：直接设置为运行状态
+		planMgr.SetInitialPlan(initialPlan)
+		taskCtx.SetStatus(StatusRunning)
+	}
 
 	completedSteps := 0
 	for {

@@ -41,7 +41,64 @@ type PlanInput struct {
 	AllowDangerous bool
 }
 
+// AssessResult holds the LLM's pre-assessment of whether a plan is needed.
+type AssessResult struct {
+	NeedsPlan      bool   `json:"needs_plan"`
+	EstimatedSteps int    `json:"estimated_steps"`
+	Reason         string `json:"reason"`
+}
+
+// Assess asks the LLM to quickly evaluate whether the task needs a structured plan.
+// Tasks with fewer than 3 estimated steps are considered simple and skip planning.
+func (p *Planner) Assess(ctx context.Context, input PlanInput) (*AssessResult, error) {
+	toolList := ""
+	for _, t := range input.Tools {
+		toolList += fmt.Sprintf("- %s: %s\n", t.Name, t.Description)
+	}
+
+	systemPrompt := `你是一个任务复杂度评估器。请分析用户任务，判断是否需要制定分步执行计划。
+
+评估规则：
+- 如果任务可以在 1-2 步内完成（如简单的查询、查看列表、获取详情），needs_plan = false
+- 如果任务需要 3 步或更多步骤（如多维度分析、跨数据源调查、复杂的修复流程），needs_plan = true
+- 简单的数据查询、列表查看、单个资源详情获取，都属于不需要计划的任务
+
+⚠️ 严格要求：只输出一个JSON对象，不要输出任何其他文本。直接以 { 开头。
+
+输出格式：{"needs_plan":true/false,"estimated_steps":数字,"reason":"简要原因"}`
+
+	userPrompt := fmt.Sprintf("任务：%s\n\n可用工具：\n%s", input.UserInput, toolList)
+
+	timeout := 30 * time.Second
+	if dl, ok := ctx.Deadline(); ok {
+		timeout = time.Until(dl)
+		if timeout <= 0 {
+			return nil, fmt.Errorf("planner: context already expired")
+		}
+	}
+
+	resp, err := p.llmClient.Complete(ctx, core.LLMRequest{
+		TaskID:         input.TaskID,
+		Purpose:        core.PurposePlan,
+		Messages:       []core.LLMMessage{{Role: "system", Content: systemPrompt}, {Role: "user", Content: userPrompt}},
+		ResponseSchema: "plan_assessment",
+		Timeout:        timeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("planner: assess LLM call failed: %w", err)
+	}
+
+	result, err := ParseAssess(resp.Content)
+	if err != nil {
+		// 如果解析失败，默认需要计划（保守策略）
+		return &AssessResult{NeedsPlan: true, EstimatedSteps: 3, Reason: "assessment parse failed, defaulting to plan"}, nil
+	}
+
+	return result, nil
+}
+
 // Generate calls the LLM to generate a structured plan.
+// If the first attempt fails to parse, it retries once with a stricter JSON-only prompt.
 func (p *Planner) Generate(ctx context.Context, input PlanInput) (*core.Plan, error) {
 	prompt, err := p.buildPrompt(ctx, input)
 	if err != nil {
@@ -69,11 +126,34 @@ func (p *Planner) Generate(ctx context.Context, input PlanInput) (*core.Plan, er
 
 	plan, err := ParsePlan(resp.Content)
 	if err != nil {
-		return nil, fmt.Errorf("planner: parse plan: %w", err)
+		// Retry with a stricter prompt that includes the failed response
+		retryMessages := append(prompt.Messages, core.LLMMessage{
+			Role:    "assistant",
+			Content: resp.Content,
+		}, core.LLMMessage{
+			Role:    "user",
+			Content: "你的输出不是有效的JSON。请严格只输出一个JSON对象，不要有任何其他文本。直接以 { 开头。格式：{\"goal\":\"...\",\"steps\":[{\"title\":\"...\",\"objective\":\"...\",\"expected_output\":\"...\"}]}",
+		})
+		retryResp, retryErr := p.llmClient.Complete(ctx, core.LLMRequest{
+			TaskID:         input.TaskID,
+			Purpose:        core.PurposePlan,
+			Messages:       retryMessages,
+			ResponseSchema: "plan_generation",
+			Timeout:        timeout,
+		})
+		if retryErr != nil {
+			return nil, fmt.Errorf("planner: parse plan: %w (retry also failed: %v)", err, retryErr)
+		}
+		plan, err = ParsePlan(retryResp.Content)
+		if err != nil {
+			return nil, fmt.Errorf("planner: parse plan: %w", err)
+		}
 	}
 
 	plan.PlanID = p.idGen.Generate()
 	plan.Version = 1
+	plan.NeedsPlan = true
+	plan.EstSteps = len(plan.Steps)
 	plan.CreatedAt = time.Now()
 	plan.UpdatedAt = plan.CreatedAt
 
@@ -87,6 +167,31 @@ func (p *Planner) Generate(ctx context.Context, input PlanInput) (*core.Plan, er
 	}
 
 	return plan, nil
+}
+
+// GenerateNoPlan creates a minimal single-step plan for simple tasks that don't need structured planning.
+// The single step will be executed directly by the ReAct executor.
+func (p *Planner) GenerateNoPlan(input PlanInput) *core.Plan {
+	return &core.Plan{
+		PlanID:    p.idGen.Generate(),
+		Version:   1,
+		Goal:      input.UserInput,
+		NeedsPlan: false,
+		EstSteps:  1,
+		Steps: []core.PlanStep{
+			{
+				StepID:         "step_1",
+				Title:          "直接执行",
+				Objective:      input.UserInput,
+				ExpectedOutput: "完成用户请求",
+				Status:         core.StepPending,
+				CreatedBy:      "planner_skip",
+				RiskLevel:      core.RiskReadOnly,
+			},
+		},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
 }
 
 func (p *Planner) buildPrompt(ctx context.Context, input PlanInput) (core.PromptBundle, error) {

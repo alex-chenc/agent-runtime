@@ -24,6 +24,20 @@ type stepJSON struct {
 	RiskLevel      string   `json:"risk_level,omitempty"`
 }
 
+// ParseAssess parses a JSON string into an AssessResult.
+func ParseAssess(content string) (*AssessResult, error) {
+	jsonStr := textutil.ExtractJSON(content)
+	if jsonStr == "" {
+		jsonStr = content
+	}
+
+	var raw AssessResult
+	if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse assess JSON: %w", err)
+	}
+	return &raw, nil
+}
+
 // ParsePlan parses a JSON string into a Plan.
 func ParsePlan(content string) (*core.Plan, error) {
 	jsonStr := textutil.ExtractJSON(content)

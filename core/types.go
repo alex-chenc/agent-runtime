@@ -226,6 +226,8 @@ type Plan struct {
 	PlanID      string     `json:"plan_id"`
 	Version     int        `json:"version"`
 	Goal        string     `json:"goal"`
+	NeedsPlan   bool       `json:"needs_plan"`              // LLM 预评估：是否需要分步计划
+	EstSteps    int        `json:"est_steps,omitempty"`     // LLM 预评估：估计步骤数
 	Assumptions []string   `json:"assumptions,omitempty"`
 	Steps       []PlanStep `json:"steps"`
 	CreatedAt   time.Time  `json:"created_at"`
