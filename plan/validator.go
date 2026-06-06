@@ -85,11 +85,11 @@ func (v *Validator) Validate(plan *core.Plan) *ValidationResult {
 			result.Errors = append(result.Errors, fmt.Sprintf("step %q has empty objective", step.StepID))
 		}
 
-		// Check tools exist
+		// Check tools exist (suggested_tools 是提示信息，未知工具不阻断计划)
 		for _, toolName := range step.SuggestedTools {
 			if !v.knownTools[toolName] {
-				result.Valid = false
-				result.Errors = append(result.Errors, fmt.Sprintf("step %q references unknown tool %q", step.StepID, toolName))
+				// 未知工具仅警告，不设为无效（LLM 可能放入描述性文字）
+				continue
 			}
 			if v.disabledTools[toolName] {
 				result.Valid = false
