@@ -51,7 +51,8 @@ func ParsePlan(content string) (*core.Plan, error) {
 	}
 
 	if raw.Goal == "" {
-		return nil, fmt.Errorf("plan has empty goal")
+		// 容错：goal 为空时不报错，使用默认值
+		raw.Goal = "执行用户任务"
 	}
 	if len(raw.Steps) == 0 {
 		return nil, fmt.Errorf("plan has no steps")
