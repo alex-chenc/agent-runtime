@@ -56,9 +56,10 @@ func (v *Validator) Validate(plan *core.Plan) *ValidationResult {
 		result.Errors = append(result.Errors, fmt.Sprintf("plan has %d steps, max is %d", len(plan.Steps), v.maxSteps))
 	}
 
-	// Check for duplicate step IDs and titles
+	// Step IDs are execution identity and therefore must be unique. Titles are
+	// presentation text; a generic planner may legitimately use the same action
+	// label for different parameters, so duplicate titles are not fatal.
 	ids := make(map[string]bool)
-	titles := make(map[string]bool)
 	for _, step := range plan.Steps {
 		if step.StepID == "" {
 			result.Valid = false
@@ -74,11 +75,6 @@ func (v *Validator) Validate(plan *core.Plan) *ValidationResult {
 			result.Valid = false
 			result.Errors = append(result.Errors, fmt.Sprintf("step %q has empty title", step.StepID))
 		}
-		if titles[step.Title] {
-			result.Valid = false
-			result.Errors = append(result.Errors, fmt.Sprintf("duplicate step title: %q", step.Title))
-		}
-		titles[step.Title] = true
 
 		if step.Objective == "" {
 			result.Valid = false

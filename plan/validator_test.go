@@ -68,6 +68,23 @@ func TestValidator_DuplicateStepID(t *testing.T) {
 	}
 }
 
+func TestValidator_AllowsDuplicateStepTitlesWithUniqueIDs(t *testing.T) {
+	v := NewValidator(10, nil, nil)
+	plan := &core.Plan{
+		Goal: "generate two script types",
+		Steps: []core.PlanStep{
+			{StepID: "s1", Title: "Vulnerability.Script.Generate", Objective: "generate poc"},
+			{StepID: "s2", Title: "Vulnerability.Script.Generate", Objective: "generate fix", Dependencies: []string{"s1"}},
+			{StepID: "s3", Title: "Vulnerability.Script.Status", Objective: "check poc status", Dependencies: []string{"s1"}},
+			{StepID: "s4", Title: "Vulnerability.Script.Status", Objective: "check fix status", Dependencies: []string{"s2"}},
+		},
+	}
+	result := v.Validate(plan)
+	if !result.Valid {
+		t.Fatalf("duplicate display titles with unique IDs must remain valid: %v", result.Errors)
+	}
+}
+
 func TestValidator_EmptyStepID(t *testing.T) {
 	v := NewValidator(10, nil, nil)
 	plan := &core.Plan{
