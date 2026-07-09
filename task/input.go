@@ -8,6 +8,9 @@ type TaskInput struct {
 	UserInput         string                `json:"user_input"`
 	UserContext       map[string]any        `json:"user_context,omitempty"`
 	InitialExperience []core.ExperienceItem `json:"initial_experience,omitempty"`
-	Metadata          map[string]string     `json:"metadata,omitempty"`
-	ConfigPatch       *core.ConfigPatch     `json:"config_patch,omitempty"`
+	// InitialPlan allows an orchestrator to provide the authoritative plan.
+	// When present, Runtime skips router assessment and LLM plan generation.
+	InitialPlan *core.Plan        `json:"initial_plan,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	ConfigPatch *core.ConfigPatch `json:"config_patch,omitempty"`
 }

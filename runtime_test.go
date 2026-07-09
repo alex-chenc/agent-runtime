@@ -131,6 +131,140 @@ func TestRuntimeRunRecordsModelAndToolCalls(t *testing.T) {
 	}
 }
 
+func TestRuntimeRunUsesProvidedPlanAndBoundStepTool(t *testing.T) {
+	llm := &sequenceLLM{responses: []LLMResponse{
+		{Content: `{"action":"tool_call","summary":"generate fix","tool_call":{"tool_name":"script_generate","reason":"generate requested script","args":{"script_type":"poc","cve_id":"wrong"}}}`},
+		{Content: `{"action":"step_result","summary":"done","step_result":{"result":"fix script generated","evidence":["tool call succeeded"],"confidence":"high"}}`},
+		{Content: `{"final_answer":"fix script generated"}`},
+	}}
+	tools := &successToolGateway{}
+	rt, err := New(
+		WithConfig(runtimeTestConfig()),
+		WithLLMClient(llm),
+		WithToolGateway(tools),
+		WithTools([]ToolDescriptor{{
+			Name:         "script_generate",
+			Description:  "generate script",
+			RiskLevel:    RiskReadOnly,
+			AutoCallable: true,
+			ArgsSchema: map[string]any{
+				"type":     "object",
+				"required": []any{"cve_id", "script_type"},
+				"properties": map[string]any{
+					"cve_id":      map[string]any{"type": "string"},
+					"script_type": map[string]any{"type": "string", "enum": []any{"poc", "fix"}},
+				},
+			},
+		}}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	provided := &Plan{
+		Goal: "generate fix script",
+		Steps: []PlanStep{{
+			StepID:         "generate_fix",
+			Title:          "generate fix",
+			Objective:      "generate the fix script",
+			ExpectedOutput: "generated fix script",
+			AllowedTools:   []string{"script_generate"},
+			ToolArgs: map[string]any{
+				"cve_id":      "CVE-2021-45340",
+				"script_type": "fix",
+			},
+			RiskLevel: RiskReadOnly,
+		}},
+	}
+	result, err := rt.Run(context.Background(), TaskInput{
+		TaskID:      "task-provided-plan",
+		UserInput:   "generate fix script",
+		InitialPlan: provided,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed; errors=%v", result.Status, result.Errors)
+	}
+	for _, req := range llm.requests {
+		if req.Purpose == PurposePlan {
+			t.Fatalf("provided plan must skip planning, got request %+v", req)
+		}
+	}
+	if len(tools.requests) != 1 {
+		t.Fatalf("tool requests = %d, want 1", len(tools.requests))
+	}
+	if got := tools.requests[0].Args["cve_id"]; got != "CVE-2021-45340" {
+		t.Fatalf("bound cve_id = %v", got)
+	}
+	if got := tools.requests[0].Args["script_type"]; got != "fix" {
+		t.Fatalf("bound script_type = %v, want fix", got)
+	}
+	if result.InitialPlan == provided {
+		t.Fatal("runtime must copy the caller-provided plan before mutating it")
+	}
+}
+
+func TestRuntimeRunRejectsToolOutsideStepScopeAndRecordsStage(t *testing.T) {
+	llm := &sequenceLLM{responses: []LLMResponse{
+		{Content: `{"action":"tool_call","summary":"wrong tool","tool_call":{"tool_name":"host_list","reason":"wrong choice","args":{}}}`},
+		{Content: `{"action":"fail_step","summary":"cannot continue","failure":{"reason":"tool scope rejected","recoverable":false}}`},
+		{Content: `{"final_answer":"tool scope rejected"}`},
+	}}
+	tools := &successToolGateway{}
+	hooks := &recordingHookSink{}
+	rt, err := New(
+		WithConfig(runtimeTestConfig()),
+		WithLLMClient(llm),
+		WithToolGateway(tools),
+		WithTools([]ToolDescriptor{
+			{Name: "vulnerability_list", RiskLevel: RiskReadOnly, AutoCallable: true},
+			{Name: "host_list", RiskLevel: RiskReadOnly, AutoCallable: true},
+		}),
+		WithHooks(hooks),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := rt.Run(context.Background(), TaskInput{
+		TaskID:    "task-step-scope",
+		UserInput: "query vulnerability",
+		InitialPlan: &Plan{
+			Goal: "query vulnerability",
+			Steps: []PlanStep{{
+				StepID:       "query_vulnerability",
+				Title:        "query vulnerability",
+				Objective:    "query vulnerability",
+				AllowedTools: []string{"vulnerability_list"},
+				RiskLevel:    RiskReadOnly,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools.requests) != 0 {
+		t.Fatalf("gateway calls = %d, want 0", len(tools.requests))
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("tool records = %d, want 1", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].ValidationStage != "step_tool_scope" {
+		t.Fatalf("validation stage = %q", result.ToolCalls[0].ValidationStage)
+	}
+	time.Sleep(20 * time.Millisecond)
+	finished := hooks.eventsByType(HookToolCallFinished)
+	if len(finished) == 0 {
+		t.Fatal("expected tool_call_finished hook")
+	}
+	payload, _ := finished[0].Payload.(map[string]interface{})
+	if payload["validation_stage"] != "step_tool_scope" {
+		t.Fatalf("hook validation_stage = %v", payload["validation_stage"])
+	}
+}
+
 func TestRuntimeRunWithoutToolsCanCompleteStepResult(t *testing.T) {
 	llm := &sequenceLLM{responses: []LLMResponse{
 		{Content: `{"goal":"summarize","steps":[{"title":"answer","objective":"produce answer","expected_output":"answer","risk_level":"read_only"}]}`},
@@ -185,9 +319,18 @@ func TestRuntimeRunLoadsExperienceForPlanning(t *testing.T) {
 	if len(result.ExperienceUsage) != 1 || result.ExperienceUsage[0].ItemID != "exp-1" {
 		t.Fatalf("experience usage = %+v, want exp-1", result.ExperienceUsage)
 	}
-	if len(llm.requests) == 0 || !strings.Contains(llm.requests[0].Messages[0].Content, "prefer concise answers") {
+	if len(llm.requests) == 0 || !messagesContain(llm.requests[0].Messages, "prefer concise answers") {
 		t.Fatalf("planner request did not include experience summary: %+v", llm.requests)
 	}
+}
+
+func messagesContain(messages []LLMMessage, needle string) bool {
+	for _, message := range messages {
+		if strings.Contains(message.Content, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRuntimeRunHandlesReactExperienceRequest(t *testing.T) {

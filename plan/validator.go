@@ -96,6 +96,18 @@ func (v *Validator) Validate(plan *core.Plan) *ValidationResult {
 				result.Errors = append(result.Errors, fmt.Sprintf("step %q references disabled tool %q", step.StepID, toolName))
 			}
 		}
+		// allowed_tools is an execution boundary, so every entry must resolve.
+		for _, toolName := range step.AllowedTools {
+			if !v.knownTools[toolName] {
+				result.Valid = false
+				result.Errors = append(result.Errors, fmt.Sprintf("step %q allows unknown tool %q", step.StepID, toolName))
+				continue
+			}
+			if v.disabledTools[toolName] {
+				result.Valid = false
+				result.Errors = append(result.Errors, fmt.Sprintf("step %q allows disabled tool %q", step.StepID, toolName))
+			}
+		}
 
 		// Check dependencies exist
 		for _, dep := range step.Dependencies {

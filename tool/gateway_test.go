@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/alex-chenc/agent-runtime/core"
@@ -50,6 +51,13 @@ func TestGatewayWrapper_ValidatesRequiredArgs(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected validation error for missing required arg")
+	}
+	var validationErr *core.ToolCallValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error type = %T, want ToolCallValidationError", err)
+	}
+	if validationErr.Stage != core.ToolValidationArguments {
+		t.Fatalf("validation stage = %q, want %q", validationErr.Stage, core.ToolValidationArguments)
 	}
 	if gw.called {
 		t.Fatal("gateway should not be called when validation fails")

@@ -68,6 +68,9 @@ func (p *Planner) Assess(ctx context.Context, input PlanInput) (*AssessResult, e
 输出格式：{"needs_plan":true/false,"estimated_steps":数字,"reason":"简要原因"}`
 
 	userPrompt := fmt.Sprintf("任务：%s\n\n可用工具：\n%s", input.UserInput, toolList)
+	if input.Experience != "" {
+		userPrompt += "\n\n相关执行经验：\n" + input.Experience
+	}
 
 	timeout := 30 * time.Second
 	if dl, ok := ctx.Deadline(); ok {

@@ -42,9 +42,12 @@ func TestParsePlan_MultipleSteps(t *testing.T) {
 
 func TestParsePlan_EmptyGoal(t *testing.T) {
 	input := `{"goal":"","steps":[{"title":"A","objective":"a"}]}`
-	_, err := ParsePlan(input)
-	if err == nil {
-		t.Error("expected error for empty goal")
+	plan, err := ParsePlan(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Goal != "执行用户任务" {
+		t.Fatalf("goal = %q, want fallback", plan.Goal)
 	}
 }
 

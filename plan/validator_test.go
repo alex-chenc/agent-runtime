@@ -143,7 +143,7 @@ func TestValidator_NonExistentDep(t *testing.T) {
 	}
 }
 
-func TestValidator_UnknownTool(t *testing.T) {
+func TestValidator_UnknownSuggestedToolIsHintOnly(t *testing.T) {
 	tools := []core.ToolDescriptor{{Name: "grep"}}
 	v := NewValidator(10, tools, nil)
 	plan := &core.Plan{
@@ -153,8 +153,25 @@ func TestValidator_UnknownTool(t *testing.T) {
 		},
 	}
 	result := v.Validate(plan)
+	if !result.Valid {
+		t.Fatalf("unknown suggested tool should remain a non-blocking hint: %v", result.Errors)
+	}
+}
+
+func TestValidator_UnknownAllowedToolIsInvalid(t *testing.T) {
+	tools := []core.ToolDescriptor{{Name: "grep"}}
+	v := NewValidator(10, tools, nil)
+	result := v.Validate(&core.Plan{
+		Goal: "test",
+		Steps: []core.PlanStep{{
+			StepID:       "s1",
+			Title:        "A",
+			Objective:    "a",
+			AllowedTools: []string{"missing"},
+		}},
+	})
 	if result.Valid {
-		t.Error("unknown tool should be invalid")
+		t.Fatal("unknown allowed tool must invalidate a caller-provided constrained step")
 	}
 }
 

@@ -45,10 +45,18 @@ func (w *GatewayWrapper) CallValidated(ctx context.Context, req core.ToolRequest
 	// 1. Check tool exists
 	desc, err := w.registry.Get(req.ToolName)
 	if err != nil {
-		return core.ToolResponse{}, fmt.Errorf("tool validation: %w", err)
+		return core.ToolResponse{}, &core.ToolCallValidationError{
+			Stage:    core.ToolValidationDescriptor,
+			ToolName: req.ToolName,
+			Message:  err.Error(),
+		}
 	}
 	if err := validateArgs(desc.ArgsSchema, req.Args); err != nil {
-		return core.ToolResponse{}, fmt.Errorf("tool validation: %w", err)
+		return core.ToolResponse{}, &core.ToolCallValidationError{
+			Stage:    core.ToolValidationArguments,
+			ToolName: req.ToolName,
+			Message:  err.Error(),
+		}
 	}
 
 	// 2. Check policy
@@ -61,10 +69,18 @@ func (w *GatewayWrapper) CallValidated(ctx context.Context, req core.ToolRequest
 			RiskLevel: desc.RiskLevel,
 		})
 		if err != nil {
-			return core.ToolResponse{}, fmt.Errorf("tool policy evaluation: %w", err)
+			return core.ToolResponse{}, &core.ToolCallValidationError{
+				Stage:    core.ToolValidationPolicy,
+				ToolName: req.ToolName,
+				Message:  err.Error(),
+			}
 		}
 		if decision != core.PolicyAllow {
-			return core.ToolResponse{}, fmt.Errorf("tool %q denied by policy: %s", req.ToolName, decision)
+			return core.ToolResponse{}, &core.ToolCallValidationError{
+				Stage:    core.ToolValidationPolicy,
+				ToolName: req.ToolName,
+				Message:  fmt.Sprintf("denied by policy: %s", decision),
+			}
 		}
 	}
 

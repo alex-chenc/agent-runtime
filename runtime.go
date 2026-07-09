@@ -10,8 +10,8 @@ import (
 
 	"github.com/alex-chenc/agent-runtime/apperr"
 	"github.com/alex-chenc/agent-runtime/audit"
-	"github.com/alex-chenc/agent-runtime/core"
 	"github.com/alex-chenc/agent-runtime/contextbudget"
+	"github.com/alex-chenc/agent-runtime/core"
 	"github.com/alex-chenc/agent-runtime/correction"
 	"github.com/alex-chenc/agent-runtime/executor"
 	"github.com/alex-chenc/agent-runtime/exit"
@@ -95,6 +95,13 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 	cfg := r.config
 	if input.ConfigPatch != nil {
 		cfg = cfg.ApplyPatch(*input.ConfigPatch)
+	}
+	providedPlan := input.InitialPlan != nil
+	if providedPlan {
+		// A caller-provided plan is authoritative. Reflection may retry or skip
+		// a step, but the runtime must not replace or append plan steps.
+		cfg.EnableCorrection = false
+		cfg.AllowDynamicNewSteps = false
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("runtime: invalid config: %w", err)
@@ -268,7 +275,9 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 	var initialPlan *core.Plan
 	var composedPrompt string
 
-	if r.router != nil {
+	if providedPlan {
+		initialPlan = prepareProvidedPlan(input.InitialPlan, r.idGen, r.clock.Now())
+	} else if r.router != nil {
 		// 使用 Router 进行智能路由
 		routeResult, routeErr := r.router.Route(ctx, RouteInput{
 			TaskID:      taskID,
@@ -413,10 +422,11 @@ func (r *Runtime) Run(ctx context.Context, input TaskInput) (*TaskResult, error)
 		hookMgr.EmitAsync(ctx, HookEvent{TaskID: taskID, Type: HookStepStarted, StepID: nextStep.StepID, Snapshot: snap})
 
 		stepCtx := &executor.StepContext{
-			TaskID:    taskID,
-			UserInput: input.UserInput,
-			PlanGoal:  initialPlan.Goal,
-			Metadata:  input.Metadata,
+			TaskID:        taskID,
+			UserInput:     input.UserInput,
+			PlanGoal:      initialPlan.Goal,
+			Metadata:      input.Metadata,
+			PreviousSteps: copyStepExecutions(taskCtx),
 		}
 
 		reactExec := executor.NewReActExecutor(recordingLLM, toolGW, r.experienceProvider, r.idGen, effectiveProvider, currentCfg, hookMgr, compressor)
@@ -738,32 +748,32 @@ func (r *Runtime) buildResult(
 			ToolCalls:      limiters.ToolCalls(),
 			ModelCalls:     limiters.ModelCalls(),
 		},
-		InitialPlan:     initialPlan,
-		FinalPlan:       currentPlan,
-		StepExecutions:  taskCtx.Steps,
-		ToolCalls:       taskCtx.ToolCalls,
-		ModelCalls:      taskCtx.ModelCalls,
-		Errors:          errors,
-		Reflections:     taskCtx.Reflections,
-		Audits:          taskCtx.Audits,
-		Corrections:     taskCtx.Corrections,
+		InitialPlan:        initialPlan,
+		FinalPlan:          currentPlan,
+		StepExecutions:     taskCtx.Steps,
+		ToolCalls:          taskCtx.ToolCalls,
+		ModelCalls:         taskCtx.ModelCalls,
+		Errors:             errors,
+		Reflections:        taskCtx.Reflections,
+		Audits:             taskCtx.Audits,
+		Corrections:        taskCtx.Corrections,
 		ExperienceUsage:    taskCtx.ExperienceUsage,
 		ConfigChanges:      taskCtx.ConfigChanges,
 		CompressionRecords: taskCtx.CompressionRecords,
 		ContextBudget:      taskCtx.ContextBudget,
 		Metrics: RuntimeMetrics{
-			TotalTurns:           limiters.TotalTurns(),
-			TotalToolCalls:       limiters.ToolCalls(),
-			TotalModelCalls:      limiters.ModelCalls(),
-			TotalToolFailures:    limiters.ToolFailures(),
-			TotalModelFailures:   limiters.ModelFailures(),
-			TotalParseFailures:   limiters.ParseFailures(),
-			TotalAudits:          limiters.Audits(),
-			TotalReflections:     limiters.Reflections(),
-			TotalCorrections:     limiters.Corrections(),
-			TotalPromptTokens:    taskCtx.TotalPromptTokens,
+			TotalTurns:            limiters.TotalTurns(),
+			TotalToolCalls:        limiters.ToolCalls(),
+			TotalModelCalls:       limiters.ModelCalls(),
+			TotalToolFailures:     limiters.ToolFailures(),
+			TotalModelFailures:    limiters.ModelFailures(),
+			TotalParseFailures:    limiters.ParseFailures(),
+			TotalAudits:           limiters.Audits(),
+			TotalReflections:      limiters.Reflections(),
+			TotalCorrections:      limiters.Corrections(),
+			TotalPromptTokens:     taskCtx.TotalPromptTokens,
 			TotalCompletionTokens: taskCtx.TotalCompletionTokens,
-			TotalDuration:        taskCtx.EndedAt.Sub(taskCtx.StartedAt),
+			TotalDuration:         taskCtx.EndedAt.Sub(taskCtx.StartedAt),
 		},
 		StartedAt: taskCtx.StartedAt,
 		EndedAt:   taskCtx.EndedAt,
@@ -869,7 +879,7 @@ func (r *Runtime) generateFinalAnswer(ctx context.Context, llm LLMClient, taskCt
 	summaryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), taskCtx.ConfigSnapshot().ModelTimeout)
 	defer cancel()
 
-	systemPrompt := "Generate a concise final answer. Do not claim unexecuted work was completed. Respond as JSON: {\"final_answer\":\"...\"}."
+	systemPrompt := "Generate a concise final answer using only the execution evidence provided. Do not contradict successful tool observations, report tools that were never called, or claim unexecuted work was completed. Respond as JSON: {\"final_answer\":\"...\"}."
 	if r.promptProvider != nil {
 		if bundle, err := r.promptProvider.Build(summaryCtx, PromptRequest{TaskID: taskID, Purpose: PurposeSummarize}); err == nil && bundle.SystemPrompt != "" {
 			systemPrompt = bundle.SystemPrompt
@@ -916,6 +926,25 @@ func buildSummaryPrompt(status TaskStatus, reason ExitReason, steps []StepExecut
 			b.WriteString(": ")
 			b.WriteString(step.Result)
 		}
+		for _, turn := range step.ReactTurns {
+			if turn.Observation == nil {
+				continue
+			}
+			b.WriteString("\n  - observed tool=")
+			b.WriteString(turn.Observation.ToolName)
+			b.WriteString(" call_id=")
+			b.WriteString(turn.Observation.CallID)
+			b.WriteString(" status=")
+			b.WriteString(string(turn.Observation.Status))
+			if turn.Observation.Content != "" {
+				b.WriteString(" content=")
+				b.WriteString(textutil.Truncate(turn.Observation.Content, 2000))
+			}
+			if turn.Observation.Error != "" {
+				b.WriteString(" error=")
+				b.WriteString(textutil.Truncate(turn.Observation.Error, 1000))
+			}
+		}
 	}
 	if len(errors) > 0 {
 		b.WriteString("\nErrors:")
@@ -926,7 +955,7 @@ func buildSummaryPrompt(status TaskStatus, reason ExitReason, steps []StepExecut
 			b.WriteString(err.Message)
 		}
 	}
-	return textutil.Truncate(b.String(), 6000)
+	return textutil.Truncate(b.String(), 16000)
 }
 
 func parseFinalAnswer(content string) string {
@@ -1026,6 +1055,60 @@ func completedStepIDs(p *Plan) map[string]bool {
 		}
 	}
 	return completed
+}
+
+func prepareProvidedPlan(source *Plan, idGen IDGenerator, now time.Time) *Plan {
+	if source == nil {
+		return nil
+	}
+	planCopy := *source
+	if planCopy.PlanID == "" {
+		planCopy.PlanID = idGen.Generate()
+	}
+	if planCopy.Version <= 0 {
+		planCopy.Version = 1
+	}
+	planCopy.NeedsPlan = true
+	planCopy.EstSteps = len(source.Steps)
+	if planCopy.CreatedAt.IsZero() {
+		planCopy.CreatedAt = now
+	}
+	planCopy.UpdatedAt = now
+	planCopy.Assumptions = append([]string(nil), source.Assumptions...)
+	planCopy.Steps = make([]PlanStep, len(source.Steps))
+	for i := range source.Steps {
+		step := source.Steps[i]
+		step.SuggestedTools = append([]string(nil), source.Steps[i].SuggestedTools...)
+		step.AllowedTools = append([]string(nil), source.Steps[i].AllowedTools...)
+		step.Dependencies = append([]string(nil), source.Steps[i].Dependencies...)
+		if source.Steps[i].ToolArgs != nil {
+			step.ToolArgs = make(map[string]any, len(source.Steps[i].ToolArgs))
+			for key, value := range source.Steps[i].ToolArgs {
+				step.ToolArgs[key] = value
+			}
+		}
+		if step.StepID == "" {
+			step.StepID = fmt.Sprintf("step_%d", i+1)
+		}
+		step.Status = StepPending
+		step.RetryCount = 0
+		if step.CreatedBy == "" {
+			step.CreatedBy = "caller"
+		}
+		planCopy.Steps[i] = step
+	}
+	return &planCopy
+}
+
+func copyStepExecutions(taskCtx *task.Context) []StepExecution {
+	if taskCtx == nil {
+		return nil
+	}
+	taskCtx.Lock()
+	defer taskCtx.Unlock()
+	result := make([]StepExecution, len(taskCtx.Steps))
+	copy(result, taskCtx.Steps)
+	return result
 }
 
 func mergeErrors(primary, secondary []RuntimeError) []RuntimeError {

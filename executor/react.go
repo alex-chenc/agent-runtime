@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -87,6 +88,7 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 
 	limit := &limiter.Limiter{}
 	var turns []core.ReactTurn
+	failedToolSignatures := make(map[string]int)
 
 	for turnIdx := 0; turnIdx < e.config.MaxStepReactTurns; turnIdx++ {
 		// Check context
@@ -168,6 +170,9 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 		}
 
 		limit.ResetParseFailures()
+		if action.Type == core.ActionToolCall {
+			action.ToolArgs = mergeBoundToolArgs(action.ToolArgs, step.ToolArgs)
+		}
 		turn.Action = action
 
 		switch action.Type {
@@ -195,6 +200,23 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 			result.ToolCalls = append(result.ToolCalls, record)
 			if toolErr != nil {
 				result.Errors = append(result.Errors, *toolErr)
+				signature := action.ToolName + ":" + textutil.SummarizeJSON(action.ToolArgs, 2000)
+				failedToolSignatures[signature]++
+				if failedToolSignatures[signature] >= 2 {
+					result.Status = core.StepFailed
+					result.Error = &core.RuntimeError{
+						ErrorID:     e.idGen.Generate(),
+						Kind:        core.ErrToolCall,
+						Stage:       "tool",
+						TaskID:      taskCtx.TaskID,
+						StepID:      step.StepID,
+						ToolCallID:  obs.CallID,
+						Message:     "repeated identical failed tool call; stopping step",
+						Recoverable: false,
+						OccurredAt:  time.Now(),
+					}
+					result.Errors = append(result.Errors, *result.Error)
+				}
 			}
 			limit.IncrToolCalls()
 			if obs.Status == core.ToolCallFailed {
@@ -359,10 +381,40 @@ You must respond with a JSON object:
 - Title: %s
 - Objective: %s
 - Expected output: %s`, step.Title, step.Objective, step.ExpectedOutput)
+	if len(step.AllowedTools) > 0 {
+		system += fmt.Sprintf("\n- Allowed tools for this step (strict): %s", strings.Join(step.AllowedTools, ", "))
+	}
+	if len(step.ToolArgs) > 0 {
+		system += fmt.Sprintf("\n- Caller-bound arguments (authoritative): %s", textutil.SummarizeJSON(step.ToolArgs, 2000))
+	}
 
 	messages := []core.LLMMessage{
 		{Role: "system", Content: system},
 		{Role: "user", Content: fmt.Sprintf("Task: %s", taskCtx.UserInput)},
+	}
+	if len(taskCtx.PreviousSteps) > 0 {
+		var previous strings.Builder
+		previous.WriteString("Completed prior steps and evidence:")
+		for _, prior := range taskCtx.PreviousSteps {
+			previous.WriteString(fmt.Sprintf("\n- %s [%s]", prior.StepID, prior.Status))
+			if prior.Result != "" {
+				previous.WriteString(": ")
+				previous.WriteString(textutil.Truncate(prior.Result, 1500))
+			}
+			for _, turn := range prior.ReactTurns {
+				if turn.Observation == nil {
+					continue
+				}
+				previous.WriteString(fmt.Sprintf(
+					"\n  tool=%s call_id=%s status=%s observation=%s",
+					turn.Observation.ToolName,
+					turn.Observation.CallID,
+					turn.Observation.Status,
+					textutil.Truncate(firstNonEmpty(turn.Observation.Content, turn.Observation.Error, turn.Observation.Summary), 2000),
+				))
+			}
+		}
+		messages = append(messages, core.LLMMessage{Role: "user", Content: previous.String()})
 	}
 
 	// Add previous turns
@@ -481,10 +533,10 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 			StepID: step.StepID,
 			Type:   core.HookToolCallStarted,
 			Payload: map[string]interface{}{
-				"tool_name":   action.ToolName,
-				"call_id":     callID,
+				"tool_name":    action.ToolName,
+				"call_id":      callID,
 				"args_summary": textutil.SummarizeJSON(action.ToolArgs, 1000),
-				"reason":      action.Summary,
+				"reason":       action.Summary,
 			},
 		})
 	}
@@ -509,11 +561,11 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 				StepID: step.StepID,
 				Type:   core.HookToolCallFinished,
 				Payload: map[string]interface{}{
-					"call_id":        callID,
-					"tool_name":      action.ToolName,
-					"status":         string(core.ToolCallFailed),
-					"error_message":  errMsg,
-					"duration_ms":    time.Since(start).Milliseconds(),
+					"call_id":       callID,
+					"tool_name":     action.ToolName,
+					"status":        string(core.ToolCallFailed),
+					"error_message": errMsg,
+					"duration_ms":   time.Since(start).Milliseconds(),
 				},
 			})
 		}
@@ -525,6 +577,52 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 			StepID:      step.StepID,
 			ToolCallID:  callID,
 			Message:     errMsg,
+			Recoverable: true,
+			OccurredAt:  start,
+		}
+	}
+
+	if len(step.AllowedTools) > 0 && !containsTool(step.AllowedTools, action.ToolName) {
+		validationErr := &core.ToolCallValidationError{
+			Stage:    core.ToolValidationStepScope,
+			ToolName: action.ToolName,
+			Message:  fmt.Sprintf("tool is outside step allowlist: %s", strings.Join(step.AllowedTools, ", ")),
+		}
+		record.Status = core.ToolCallFailed
+		record.ErrorMessage = validationErr.Error()
+		record.ValidationStage = string(validationErr.Stage)
+		record.EndedAt = time.Now()
+		obs := &core.Observation{
+			ToolName: action.ToolName,
+			CallID:   callID,
+			Status:   core.ToolCallFailed,
+			Error:    validationErr.Error(),
+			Summary:  validationErr.Error(),
+			Duration: time.Since(start),
+		}
+		if e.hookMgr != nil {
+			e.hookMgr.EmitAsync(ctx, core.HookEvent{
+				TaskID: taskCtx.TaskID,
+				StepID: step.StepID,
+				Type:   core.HookToolCallFinished,
+				Payload: map[string]interface{}{
+					"call_id":          callID,
+					"tool_name":        action.ToolName,
+					"status":           string(core.ToolCallFailed),
+					"error_message":    validationErr.Error(),
+					"validation_stage": string(validationErr.Stage),
+					"duration_ms":      time.Since(start).Milliseconds(),
+				},
+			})
+		}
+		return obs, record, &core.RuntimeError{
+			ErrorID:     e.idGen.Generate(),
+			Kind:        core.ErrToolCall,
+			Stage:       "tool",
+			TaskID:      taskCtx.TaskID,
+			StepID:      step.StepID,
+			ToolCallID:  callID,
+			Message:     validationErr.Error(),
 			Recoverable: true,
 			OccurredAt:  start,
 		}
@@ -547,8 +645,10 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 	}
 
 	if err != nil {
+		validationStage := validationStageFromError(err)
 		record.Status = core.ToolCallFailed
 		record.ErrorMessage = err.Error()
+		record.ValidationStage = validationStage
 		record.EndedAt = time.Now()
 		obs.Status = core.ToolCallFailed
 		obs.Error = err.Error()
@@ -560,11 +660,12 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 				StepID: step.StepID,
 				Type:   core.HookToolCallFinished,
 				Payload: map[string]interface{}{
-					"call_id":        callID,
-					"tool_name":      action.ToolName,
-					"status":         string(core.ToolCallFailed),
-					"error_message":  err.Error(),
-					"duration_ms":    time.Since(start).Milliseconds(),
+					"call_id":          callID,
+					"tool_name":        action.ToolName,
+					"status":           string(core.ToolCallFailed),
+					"error_message":    err.Error(),
+					"validation_stage": validationStage,
+					"duration_ms":      time.Since(start).Milliseconds(),
 				},
 			})
 		}
@@ -653,6 +754,34 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 	}
 
 	return obs, record, nil
+}
+
+func mergeBoundToolArgs(modelArgs, boundArgs map[string]any) map[string]any {
+	result := make(map[string]any, len(modelArgs)+len(boundArgs))
+	for key, value := range modelArgs {
+		result[key] = value
+	}
+	for key, value := range boundArgs {
+		result[key] = value
+	}
+	return result
+}
+
+func containsTool(allowed []string, toolName string) bool {
+	for _, name := range allowed {
+		if name == toolName {
+			return true
+		}
+	}
+	return false
+}
+
+func validationStageFromError(err error) string {
+	var validationErr *core.ToolCallValidationError
+	if errors.As(err, &validationErr) {
+		return string(validationErr.Stage)
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {

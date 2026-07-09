@@ -121,23 +121,23 @@ const (
 type HookEventType string
 
 const (
-	HookTaskStarted        HookEventType = "task_started"
-	HookExperienceLoaded   HookEventType = "experience_loaded"
-	HookPlanCreated        HookEventType = "plan_created"
-	HookStepStarted        HookEventType = "step_started"
-	HookModelCallStarted   HookEventType = "model_call_started"
-	HookModelCallFinished  HookEventType = "model_call_finished"
-	HookToolCallStarted    HookEventType = "tool_call_started"
-	HookToolCallFinished   HookEventType = "tool_call_finished"
-	HookStepCompleted      HookEventType = "step_completed"
-	HookStepFailed         HookEventType = "step_failed"
-	HookAuditStarted       HookEventType = "audit_started"
-	HookAuditFinished      HookEventType = "audit_finished"
-	HookReflectionStarted  HookEventType = "reflection_started"
-	HookReflectionFinished HookEventType = "reflection_finished"
-	HookCorrectionApplied  HookEventType = "correction_applied"
-	HookStepRetrying       HookEventType = "step_retrying"
-	HookStepSkipped        HookEventType = "step_skipped"
+	HookTaskStarted              HookEventType = "task_started"
+	HookExperienceLoaded         HookEventType = "experience_loaded"
+	HookPlanCreated              HookEventType = "plan_created"
+	HookStepStarted              HookEventType = "step_started"
+	HookModelCallStarted         HookEventType = "model_call_started"
+	HookModelCallFinished        HookEventType = "model_call_finished"
+	HookToolCallStarted          HookEventType = "tool_call_started"
+	HookToolCallFinished         HookEventType = "tool_call_finished"
+	HookStepCompleted            HookEventType = "step_completed"
+	HookStepFailed               HookEventType = "step_failed"
+	HookAuditStarted             HookEventType = "audit_started"
+	HookAuditFinished            HookEventType = "audit_finished"
+	HookReflectionStarted        HookEventType = "reflection_started"
+	HookReflectionFinished       HookEventType = "reflection_finished"
+	HookCorrectionApplied        HookEventType = "correction_applied"
+	HookStepRetrying             HookEventType = "step_retrying"
+	HookStepSkipped              HookEventType = "step_skipped"
 	HookConfigChanged            HookEventType = "config_changed"
 	HookTaskInterrupted          HookEventType = "task_interrupted"
 	HookTaskFinished             HookEventType = "task_finished"
@@ -166,8 +166,8 @@ type TaskAction string
 
 const (
 	ActionDirectReply TaskAction = "direct_reply" // 直接回复（问候、闲聊）
-	ActionSimpleCall  TaskAction = "simple_call"   // 简单工具调用（跳过计划）
-	ActionFullPlan    TaskAction = "full_plan"      // 完整计划流程
+	ActionSimpleCall  TaskAction = "simple_call"  // 简单工具调用（跳过计划）
+	ActionFullPlan    TaskAction = "full_plan"    // 完整计划流程
 )
 
 // PromptFragment 提示词片段
@@ -181,20 +181,20 @@ type PromptFragment struct {
 
 // TaskClassification LLM 语义分析结果
 type TaskClassification struct {
-	TaskType   string     `json:"task_type"`   // greeting, query, analysis, investigation, remediation
-	Intent     string     `json:"intent"`      // 用户意图描述
-	Complexity string     `json:"complexity"`  // simple, moderate, complex
-	Action     TaskAction `json:"action"`      // 推荐动作
-	Fragments  []string   `json:"fragments"`   // 选中的片段名称列表
-	Reason     string     `json:"reason"`      // 判断原因
+	TaskType   string     `json:"task_type"`  // greeting, query, analysis, investigation, remediation
+	Intent     string     `json:"intent"`     // 用户意图描述
+	Complexity string     `json:"complexity"` // simple, moderate, complex
+	Action     TaskAction `json:"action"`     // 推荐动作
+	Fragments  []string   `json:"fragments"`  // 选中的片段名称列表
+	Reason     string     `json:"reason"`     // 判断原因
 }
 
 // RouteResult 路由结果
 type RouteResult struct {
-	Action          TaskAction          // 推荐动作
-	Classification  *TaskClassification // LLM 分类结果（规则匹配时为 nil）
-	SelectedFragments []string          // 选中的片段名称列表
-	ComposedPrompt  string              // 拼接后的完整提示词
+	Action            TaskAction          // 推荐动作
+	Classification    *TaskClassification // LLM 分类结果（规则匹配时为 nil）
+	SelectedFragments []string            // 选中的片段名称列表
+	ComposedPrompt    string              // 拼接后的完整提示词
 }
 
 // CompressionStrategy identifies the type of context compression applied.
@@ -265,8 +265,8 @@ type Plan struct {
 	PlanID      string     `json:"plan_id"`
 	Version     int        `json:"version"`
 	Goal        string     `json:"goal"`
-	NeedsPlan   bool       `json:"needs_plan"`              // LLM 预评估：是否需要分步计划
-	EstSteps    int        `json:"est_steps,omitempty"`     // LLM 预评估：估计步骤数
+	NeedsPlan   bool       `json:"needs_plan"`          // LLM 预评估：是否需要分步计划
+	EstSteps    int        `json:"est_steps,omitempty"` // LLM 预评估：估计步骤数
 	Assumptions []string   `json:"assumptions,omitempty"`
 	Steps       []PlanStep `json:"steps"`
 	CreatedAt   time.Time  `json:"created_at"`
@@ -274,30 +274,36 @@ type Plan struct {
 }
 
 type PlanStep struct {
-	StepID         string     `json:"step_id"`
-	Title          string     `json:"title"`
-	Objective      string     `json:"objective"`
-	ExpectedOutput string     `json:"expected_output"`
-	SuggestedTools []string   `json:"suggested_tools,omitempty"`
-	Dependencies   []string   `json:"dependencies,omitempty"`
-	Status         StepStatus `json:"status"`
-	RetryCount     int        `json:"retry_count"`
-	CreatedBy      string     `json:"created_by"`
-	ChangeReason   string     `json:"change_reason,omitempty"`
-	RiskLevel      RiskLevel  `json:"risk_level"`
+	StepID         string   `json:"step_id"`
+	Title          string   `json:"title"`
+	Objective      string   `json:"objective"`
+	ExpectedOutput string   `json:"expected_output"`
+	SuggestedTools []string `json:"suggested_tools,omitempty"`
+	// AllowedTools is a strict per-step tool allowlist supplied by the caller.
+	// When empty, SuggestedTools keeps its legacy hint-only behavior.
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	// ToolArgs contains caller-bound arguments. These values are authoritative
+	// and override same-name arguments proposed by the model.
+	ToolArgs     map[string]any `json:"tool_args,omitempty"`
+	Dependencies []string       `json:"dependencies,omitempty"`
+	Status       StepStatus     `json:"status"`
+	RetryCount   int            `json:"retry_count"`
+	CreatedBy    string         `json:"created_by"`
+	ChangeReason string         `json:"change_reason,omitempty"`
+	RiskLevel    RiskLevel      `json:"risk_level"`
 }
 
 type TaskSnapshot struct {
-	TaskID          string            `json:"task_id"`
-	UserInput       string            `json:"user_input"`
-	Status          TaskStatus        `json:"status"`
-	ExitReason      ExitReason        `json:"exit_reason"`
-	CurrentPlan     *Plan             `json:"current_plan,omitempty"`
-	CurrentStepID   string            `json:"current_step_id,omitempty"`
-	CompletedSteps  int               `json:"completed_steps"`
-	FailedSteps     int               `json:"failed_steps"`
-	TotalToolCalls  int               `json:"total_tool_calls"`
-	TotalModelCalls int               `json:"total_model_calls"`
+	TaskID          string                 `json:"task_id"`
+	UserInput       string                 `json:"user_input"`
+	Status          TaskStatus             `json:"status"`
+	ExitReason      ExitReason             `json:"exit_reason"`
+	CurrentPlan     *Plan                  `json:"current_plan,omitempty"`
+	CurrentStepID   string                 `json:"current_step_id,omitempty"`
+	CompletedSteps  int                    `json:"completed_steps"`
+	FailedSteps     int                    `json:"failed_steps"`
+	TotalToolCalls  int                    `json:"total_tool_calls"`
+	TotalModelCalls int                    `json:"total_model_calls"`
 	RecentErrors    []RuntimeError         `json:"recent_errors,omitempty"`
 	ContextBudget   *ContextBudgetSnapshot `json:"context_budget,omitempty"`
 	StartedAt       time.Time              `json:"started_at"`
@@ -409,18 +415,46 @@ type Observation struct {
 }
 
 type ToolCallRecord struct {
-	CallID        string         `json:"call_id"`
-	TaskID        string         `json:"task_id"`
-	StepID        string         `json:"step_id"`
-	ToolName      string         `json:"tool_name"`
-	Reason        string         `json:"reason"`
-	ArgsSummary   string         `json:"args_summary"`
-	Status        ToolCallStatus `json:"status"`
-	ResultSummary string         `json:"result_summary"`
-	ErrorMessage  string         `json:"error_message,omitempty"`
-	RiskLevel     RiskLevel      `json:"risk_level"`
-	StartedAt     time.Time      `json:"started_at"`
-	EndedAt       time.Time      `json:"ended_at"`
+	CallID          string         `json:"call_id"`
+	TaskID          string         `json:"task_id"`
+	StepID          string         `json:"step_id"`
+	ToolName        string         `json:"tool_name"`
+	Reason          string         `json:"reason"`
+	ArgsSummary     string         `json:"args_summary"`
+	Status          ToolCallStatus `json:"status"`
+	ResultSummary   string         `json:"result_summary"`
+	ErrorMessage    string         `json:"error_message,omitempty"`
+	ValidationStage string         `json:"validation_stage,omitempty"`
+	RiskLevel       RiskLevel      `json:"risk_level"`
+	StartedAt       time.Time      `json:"started_at"`
+	EndedAt         time.Time      `json:"ended_at"`
+}
+
+type ToolValidationStage string
+
+const (
+	ToolValidationDescriptor ToolValidationStage = "descriptor"
+	ToolValidationArguments  ToolValidationStage = "arguments"
+	ToolValidationPolicy     ToolValidationStage = "policy"
+	ToolValidationStepScope  ToolValidationStage = "step_tool_scope"
+)
+
+// ToolCallValidationError identifies failures that happen before the concrete
+// ToolGateway is reached, allowing callers to persist the real failure stage.
+type ToolCallValidationError struct {
+	Stage    ToolValidationStage `json:"stage"`
+	ToolName string              `json:"tool_name,omitempty"`
+	Message  string              `json:"message"`
+}
+
+func (e *ToolCallValidationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.ToolName == "" {
+		return fmt.Sprintf("tool validation (%s): %s", e.Stage, e.Message)
+	}
+	return fmt.Sprintf("tool validation (%s) for %q: %s", e.Stage, e.ToolName, e.Message)
 }
 
 type ExperienceUsage struct {
@@ -538,17 +572,17 @@ type CompletionSummary struct {
 
 // CompressionRecord documents a single compression event during task execution.
 type CompressionRecord struct {
-	CompressionID string            `json:"compression_id"`
-	TaskID        string            `json:"task_id"`
-	StepID        string            `json:"step_id,omitempty"`
+	CompressionID string              `json:"compression_id"`
+	TaskID        string              `json:"task_id"`
+	StepID        string              `json:"step_id,omitempty"`
 	Strategy      CompressionStrategy `json:"strategy"`
-	TriggerRatio  float64           `json:"trigger_ratio"`
-	BeforeTokens  int               `json:"before_tokens"`
-	AfterTokens   int               `json:"after_tokens"`
-	CompressedRef []string          `json:"compressed_ref,omitempty"`
-	Summary       string            `json:"summary"`
-	ModelCallID   string            `json:"model_call_id,omitempty"`
-	CreatedAt     time.Time         `json:"created_at"`
+	TriggerRatio  float64             `json:"trigger_ratio"`
+	BeforeTokens  int                 `json:"before_tokens"`
+	AfterTokens   int                 `json:"after_tokens"`
+	CompressedRef []string            `json:"compressed_ref,omitempty"`
+	Summary       string              `json:"summary"`
+	ModelCallID   string              `json:"model_call_id,omitempty"`
+	CreatedAt     time.Time           `json:"created_at"`
 }
 
 // ContextBudgetSnapshot captures the context budget state at a point in time.
@@ -564,45 +598,45 @@ type ContextBudgetSnapshot struct {
 }
 
 type RuntimeMetrics struct {
-	TotalTurns           int           `json:"total_turns"`
-	TotalToolCalls       int           `json:"total_tool_calls"`
-	TotalModelCalls      int           `json:"total_model_calls"`
-	TotalToolFailures    int           `json:"total_tool_failures"`
-	TotalModelFailures   int           `json:"total_model_failures"`
-	TotalParseFailures   int           `json:"total_parse_failures"`
-	TotalAudits          int           `json:"total_audits"`
-	TotalReflections     int           `json:"total_reflections"`
-	TotalCorrections     int           `json:"total_corrections"`
-	TotalPromptTokens    int           `json:"total_prompt_tokens"`
-	TotalCompletionTokens int          `json:"total_completion_tokens"`
-	TotalDuration        time.Duration `json:"total_duration"`
-	ModelCallDuration    time.Duration `json:"model_call_duration"`
-	ToolCallDuration     time.Duration `json:"tool_call_duration"`
+	TotalTurns            int           `json:"total_turns"`
+	TotalToolCalls        int           `json:"total_tool_calls"`
+	TotalModelCalls       int           `json:"total_model_calls"`
+	TotalToolFailures     int           `json:"total_tool_failures"`
+	TotalModelFailures    int           `json:"total_model_failures"`
+	TotalParseFailures    int           `json:"total_parse_failures"`
+	TotalAudits           int           `json:"total_audits"`
+	TotalReflections      int           `json:"total_reflections"`
+	TotalCorrections      int           `json:"total_corrections"`
+	TotalPromptTokens     int           `json:"total_prompt_tokens"`
+	TotalCompletionTokens int           `json:"total_completion_tokens"`
+	TotalDuration         time.Duration `json:"total_duration"`
+	ModelCallDuration     time.Duration `json:"model_call_duration"`
+	ToolCallDuration      time.Duration `json:"tool_call_duration"`
 }
 
 type TaskResult struct {
-	TaskID             string               `json:"task_id"`
-	Status             TaskStatus           `json:"status"`
-	ExitReason         ExitReason           `json:"exit_reason"`
-	FinalAnswer        string               `json:"final_answer"`
-	Completion         CompletionSummary    `json:"completion"`
-	InitialPlan        *Plan                `json:"initial_plan,omitempty"`
-	FinalPlan          *Plan                `json:"final_plan,omitempty"`
-	StepExecutions     []StepExecution      `json:"step_executions"`
-	ToolCalls          []ToolCallRecord     `json:"tool_calls"`
-	ModelCalls         []ModelCallRecord    `json:"model_calls"`
-	Errors             []RuntimeError       `json:"errors"`
-	Reflections        []ReflectionResult   `json:"reflections"`
-	Audits             []AuditResult        `json:"audits"`
-	Corrections        []CorrectionResult   `json:"corrections"`
-	ExperienceUsage    []ExperienceUsage    `json:"experience_usage,omitempty"`
-	ConfigChanges      []ConfigChange       `json:"config_changes,omitempty"`
-	CompressionRecords []CompressionRecord  `json:"compression_records,omitempty"`
+	TaskID             string                 `json:"task_id"`
+	Status             TaskStatus             `json:"status"`
+	ExitReason         ExitReason             `json:"exit_reason"`
+	FinalAnswer        string                 `json:"final_answer"`
+	Completion         CompletionSummary      `json:"completion"`
+	InitialPlan        *Plan                  `json:"initial_plan,omitempty"`
+	FinalPlan          *Plan                  `json:"final_plan,omitempty"`
+	StepExecutions     []StepExecution        `json:"step_executions"`
+	ToolCalls          []ToolCallRecord       `json:"tool_calls"`
+	ModelCalls         []ModelCallRecord      `json:"model_calls"`
+	Errors             []RuntimeError         `json:"errors"`
+	Reflections        []ReflectionResult     `json:"reflections"`
+	Audits             []AuditResult          `json:"audits"`
+	Corrections        []CorrectionResult     `json:"corrections"`
+	ExperienceUsage    []ExperienceUsage      `json:"experience_usage,omitempty"`
+	ConfigChanges      []ConfigChange         `json:"config_changes,omitempty"`
+	CompressionRecords []CompressionRecord    `json:"compression_records,omitempty"`
 	ContextBudget      *ContextBudgetSnapshot `json:"context_budget,omitempty"`
-	Metrics            RuntimeMetrics       `json:"metrics"`
-	StartedAt          time.Time            `json:"started_at"`
-	EndedAt            time.Time            `json:"ended_at"`
-	Metadata           map[string]string    `json:"metadata,omitempty"`
+	Metrics            RuntimeMetrics         `json:"metrics"`
+	StartedAt          time.Time              `json:"started_at"`
+	EndedAt            time.Time              `json:"ended_at"`
+	Metadata           map[string]string      `json:"metadata,omitempty"`
 }
 
 func (tr *TaskResult) ToJSON() ([]byte, error) {
@@ -644,14 +678,14 @@ type RuntimeConfig struct {
 	FailOnHookError       bool          `json:"fail_on_hook_error"`
 
 	// Context budget and compression settings
-	MaxContextTokens       int     `json:"max_context_tokens"`
-	ReservedOutputTokens   int     `json:"reserved_output_tokens"`
-	EnableContextCompress  bool    `json:"enable_context_compress"`
-	ToolCompressRatio      float64 `json:"tool_compress_ratio"`
-	StepCompressRatio      float64 `json:"step_compress_ratio"`
-	LLMCompressRatio       float64 `json:"llm_compress_ratio"`
-	CompressTargetRatio    float64 `json:"compress_target_ratio"`
-	RecentTurnsToKeep      int     `json:"recent_turns_to_keep"`
+	MaxContextTokens      int     `json:"max_context_tokens"`
+	ReservedOutputTokens  int     `json:"reserved_output_tokens"`
+	EnableContextCompress bool    `json:"enable_context_compress"`
+	ToolCompressRatio     float64 `json:"tool_compress_ratio"`
+	StepCompressRatio     float64 `json:"step_compress_ratio"`
+	LLMCompressRatio      float64 `json:"llm_compress_ratio"`
+	CompressTargetRatio   float64 `json:"compress_target_ratio"`
+	RecentTurnsToKeep     int     `json:"recent_turns_to_keep"`
 }
 
 func DefaultConfig() RuntimeConfig {
@@ -666,7 +700,7 @@ func DefaultConfig() RuntimeConfig {
 		MaxAudits: 5, MaxCorrections: 3, MaxReflections: 5, MaxStepRetries: 2,
 		AllowDynamicNewSteps: true, AllowSkipFailedStep: true,
 		AllowBestEffortAnswer: true,
-		MaxContextTokens: 256000, ReservedOutputTokens: 8192,
+		MaxContextTokens:      256000, ReservedOutputTokens: 8192,
 		EnableContextCompress: true, ToolCompressRatio: 0.70,
 		StepCompressRatio: 0.80, LLMCompressRatio: 0.95,
 		CompressTargetRatio: 0.60, RecentTurnsToKeep: 6,
@@ -753,27 +787,27 @@ func (c RuntimeConfig) Validate() error {
 }
 
 type ConfigPatch struct {
-	MaxTotalTurns        *int           `json:"max_total_turns,omitempty"`
-	MaxPlanSteps         *int           `json:"max_plan_steps,omitempty"`
-	MaxStepReactTurns    *int           `json:"max_step_react_turns,omitempty"`
-	MaxToolCalls         *int           `json:"max_tool_calls,omitempty"`
-	MaxToolCallsPerStep  *int           `json:"max_tool_calls_per_step,omitempty"`
-	TaskTimeout          *time.Duration `json:"task_timeout,omitempty"`
-	ModelTimeout         *time.Duration `json:"model_timeout,omitempty"`
-	ToolTimeout          *time.Duration `json:"tool_timeout,omitempty"`
-	EnableReflection     *bool          `json:"enable_reflection,omitempty"`
-	EnableAudit          *bool          `json:"enable_audit,omitempty"`
-	EnableCorrection     *bool          `json:"enable_correction,omitempty"`
-	MaxStepRetries       *int           `json:"max_step_retries,omitempty"`
-	DisabledTools        []string       `json:"disabled_tools,omitempty"`
-	MaxContextTokens     *int           `json:"max_context_tokens,omitempty"`
-	ReservedOutputTokens *int           `json:"reserved_output_tokens,omitempty"`
-	EnableContextCompress *bool         `json:"enable_context_compress,omitempty"`
-	ToolCompressRatio    *float64       `json:"tool_compress_ratio,omitempty"`
-	StepCompressRatio    *float64       `json:"step_compress_ratio,omitempty"`
-	LLMCompressRatio     *float64       `json:"llm_compress_ratio,omitempty"`
-	CompressTargetRatio  *float64       `json:"compress_target_ratio,omitempty"`
-	RecentTurnsToKeep    *int           `json:"recent_turns_to_keep,omitempty"`
+	MaxTotalTurns         *int           `json:"max_total_turns,omitempty"`
+	MaxPlanSteps          *int           `json:"max_plan_steps,omitempty"`
+	MaxStepReactTurns     *int           `json:"max_step_react_turns,omitempty"`
+	MaxToolCalls          *int           `json:"max_tool_calls,omitempty"`
+	MaxToolCallsPerStep   *int           `json:"max_tool_calls_per_step,omitempty"`
+	TaskTimeout           *time.Duration `json:"task_timeout,omitempty"`
+	ModelTimeout          *time.Duration `json:"model_timeout,omitempty"`
+	ToolTimeout           *time.Duration `json:"tool_timeout,omitempty"`
+	EnableReflection      *bool          `json:"enable_reflection,omitempty"`
+	EnableAudit           *bool          `json:"enable_audit,omitempty"`
+	EnableCorrection      *bool          `json:"enable_correction,omitempty"`
+	MaxStepRetries        *int           `json:"max_step_retries,omitempty"`
+	DisabledTools         []string       `json:"disabled_tools,omitempty"`
+	MaxContextTokens      *int           `json:"max_context_tokens,omitempty"`
+	ReservedOutputTokens  *int           `json:"reserved_output_tokens,omitempty"`
+	EnableContextCompress *bool          `json:"enable_context_compress,omitempty"`
+	ToolCompressRatio     *float64       `json:"tool_compress_ratio,omitempty"`
+	StepCompressRatio     *float64       `json:"step_compress_ratio,omitempty"`
+	LLMCompressRatio      *float64       `json:"llm_compress_ratio,omitempty"`
+	CompressTargetRatio   *float64       `json:"compress_target_ratio,omitempty"`
+	RecentTurnsToKeep     *int           `json:"recent_turns_to_keep,omitempty"`
 }
 
 func (c RuntimeConfig) ApplyPatch(patch ConfigPatch) RuntimeConfig {
