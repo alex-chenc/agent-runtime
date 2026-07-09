@@ -444,6 +444,7 @@ type Observation struct {
 // result. Facts and references intentionally remain structured maps so callers
 // can describe arbitrary business domains without teaching Runtime tool names.
 type ToolOutcome struct {
+	Capability            string            `json:"capability,omitempty"`
 	OperationStatus       OperationStatus   `json:"operation_status"`
 	Terminal              bool              `json:"terminal"`
 	Message               string            `json:"message,omitempty"`
