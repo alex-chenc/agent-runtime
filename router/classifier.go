@@ -10,39 +10,37 @@ import (
 	"github.com/alex-chenc/agent-runtime/internal/textutil"
 )
 
+func buildClassificationSystemPrompt(catalogSummary string) string {
+	return fmt.Sprintf(`You are a task classifier and prompt-fragment selector. Analyze the user message and:
+1. Classify the task type and complexity.
+2. Select only relevant fragments from the current fragment catalog.
+
+## Output format
+Return JSON only:
+{"task_type":"greeting|query|analysis|investigation|remediation|other","intent":"concise semantic intent","complexity":"simple|moderate|complex","action":"direct_reply|simple_call|full_plan","fragments":["fragment_name"],"reason":"concise rationale"}
+
+## Complexity
+- simple: one or two direct steps; use direct_reply when no tool is needed or simple_call when a direct tool call is enough.
+- moderate or complex: dependencies, three or more meaningful steps, multiple objects or sources, conditional branches, asynchronous state, or verification; use full_plan.
+
+## Available fragment catalog
+%s
+
+## Selection rules
+- Always include base_assistant.
+- Always include react_format.
+- Select only fragments whose generic guidance is relevant to the current goal.
+- Do not infer a fixed business workflow from fragment names.
+- Select two to five fragments.
+- Keep fragment names and all machine identifiers in exact English catalog form. Natural-language intent and reason may follow the user's language.`, catalogSummary)
+}
+
 // classify 第二级：LLM 语义分析 + 片段选择
 func (r *Router) classify(ctx context.Context, input RouteInput) (*core.TaskClassification, error) {
 	catalogSummary := r.buildCatalogSummary()
 
-	systemPrompt := fmt.Sprintf(`你是任务分类器和提示词选择器。分析用户消息，完成两个任务：
-1. 分类任务类型和复杂度
-2. 从提示词目录中选择需要的片段
-
-## 输出格式（严格只输出JSON）
-{"task_type":"类型","intent":"意图","complexity":"simple/moderate/complex","action":"动作","fragments":["片段名"],"reason":"原因"}
-
-## 任务类型
-- greeting: 问候、闲聊
-- query: 简单数据查询
-- analysis: 安全分析
-- investigation: 攻击调查
-- remediation: 修复操作
-
-## 复杂度判断
-- simple: 1-2步可完成 → action: simple_call
-- moderate/complex: 3步以上 → action: full_plan
-
-## 可用提示词目录
-%s
-
-## 选择规则
-- 必须包含 base_assistant
-- 必须包含 react_format
-- 根据任务类型选择对应的功能片段
-- 不要选择与任务无关的片段
-- 选择 2-5 个片段`, catalogSummary)
-
-	userPrompt := fmt.Sprintf("用户消息：%s\n可用工具数：%d", input.UserMessage, len(input.Tools))
+	systemPrompt := buildClassificationSystemPrompt(catalogSummary)
+	userPrompt := fmt.Sprintf("User message:\n%s\n\nAvailable tool count: %d", input.UserMessage, len(input.Tools))
 
 	timeout := r.config.LLMTimeout
 	if timeout == 0 {

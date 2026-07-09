@@ -11,17 +11,17 @@ import (
 
 // Router 智能任务路由器
 type Router struct {
-	llmClient  core.LLMClient
-	fragments  []core.PromptFragment
-	config     Config
+	llmClient core.LLMClient
+	fragments []core.PromptFragment
+	config    Config
 }
 
 // Config 路由器配置
 type Config struct {
-	EnableLLMRouting   bool          `json:"enable_llm_routing"`   // 是否启用 LLM 路由
-	LLMTemperature     float64       `json:"llm_temperature"`      // LLM 分类温度
-	LLMTimeout         time.Duration `json:"llm_timeout"`          // LLM 分类超时
-	DirectReplyMaxLen  int           `json:"direct_reply_max_len"` // 直接回复最大消息长度
+	EnableLLMRouting  bool          `json:"enable_llm_routing"`   // 是否启用 LLM 路由
+	LLMTemperature    float64       `json:"llm_temperature"`      // LLM 分类温度
+	LLMTimeout        time.Duration `json:"llm_timeout"`          // LLM 分类超时
+	DirectReplyMaxLen int           `json:"direct_reply_max_len"` // 直接回复最大消息长度
 }
 
 // DefaultConfig 默认配置
@@ -114,7 +114,7 @@ func (r *Router) buildCatalogSummary() string {
 	for _, f := range r.fragments {
 		buf.WriteString(fmt.Sprintf("- %s: %s", f.Name, f.Description))
 		if len(f.Keywords) > 0 {
-			buf.WriteString(fmt.Sprintf(" (关键词: %s)", strings.Join(f.Keywords, ", ")))
+			buf.WriteString(fmt.Sprintf(" (keywords: %s)", strings.Join(f.Keywords, ", ")))
 		}
 		buf.WriteString("\n")
 	}

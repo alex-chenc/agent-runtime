@@ -32,6 +32,8 @@ type TaskRouter interface {
 	Route(ctx context.Context, input RouteInput) (*RouteResult, error)
 }
 
+const defaultDirectReplySystemPrompt = "You are the Aegis security assistant. Reply concisely in the same language as the user's request."
+
 // RouteInput 路由输入
 type RouteInput struct {
 	TaskID      string
@@ -1377,7 +1379,7 @@ func (r *Runtime) handleDirectReply(
 	// 使用拼接的提示词或默认提示词
 	systemPrompt := composedPrompt
 	if systemPrompt == "" {
-		systemPrompt = "你是 Aegis 智能安全助手。请用中文简洁地回复用户。"
+		systemPrompt = defaultDirectReplySystemPrompt
 	}
 
 	timeout := taskCtx.ConfigSnapshot().ModelTimeout

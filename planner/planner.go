@@ -48,6 +48,18 @@ type AssessResult struct {
 	Reason         string `json:"reason"`
 }
 
+const assessmentSystemPrompt = `You are a task-complexity assessor. Determine whether the user's task needs a structured, multi-step execution plan.
+
+Assessment rules:
+- Set needs_plan=false when the task can be completed in one or two direct steps, such as a simple query, list, or single-resource detail lookup.
+- Set needs_plan=true when the task has three or more meaningful steps, dependencies, multiple data sources, conditional branches, asynchronous state, or verification requirements.
+- Assess the actual goal and available tool contracts. Do not apply a predefined business workflow.
+
+Return exactly one JSON object and no other text. Start with { and end with }.
+Schema: {"needs_plan":true,"estimated_steps":3,"reason":"concise rationale"}`
+
+const planJSONRetryPrompt = `The previous response was not valid JSON. Return exactly one JSON object and no other text. Start with {. Use this schema: {"goal":"...","steps":[{"title":"...","objective":"...","expected_output":"..."}]}`
+
 // Assess asks the LLM to quickly evaluate whether the task needs a structured plan.
 // Tasks with fewer than 3 estimated steps are considered simple and skip planning.
 func (p *Planner) Assess(ctx context.Context, input PlanInput) (*AssessResult, error) {
@@ -56,20 +68,9 @@ func (p *Planner) Assess(ctx context.Context, input PlanInput) (*AssessResult, e
 		toolList += fmt.Sprintf("- %s: %s\n", t.Name, t.Description)
 	}
 
-	systemPrompt := `你是一个任务复杂度评估器。请分析用户任务，判断是否需要制定分步执行计划。
-
-评估规则：
-- 如果任务可以在 1-2 步内完成（如简单的查询、查看列表、获取详情），needs_plan = false
-- 如果任务需要 3 步或更多步骤（如多维度分析、跨数据源调查、复杂的修复流程），needs_plan = true
-- 简单的数据查询、列表查看、单个资源详情获取，都属于不需要计划的任务
-
-⚠️ 严格要求：只输出一个JSON对象，不要输出任何其他文本。直接以 { 开头。
-
-输出格式：{"needs_plan":true/false,"estimated_steps":数字,"reason":"简要原因"}`
-
-	userPrompt := fmt.Sprintf("任务：%s\n\n可用工具：\n%s", input.UserInput, toolList)
+	userPrompt := fmt.Sprintf("Task:\n%s\n\nAvailable tools:\n%s", input.UserInput, toolList)
 	if input.Experience != "" {
-		userPrompt += "\n\n相关执行经验：\n" + input.Experience
+		userPrompt += "\n\nRelevant execution experience:\n" + input.Experience
 	}
 
 	timeout := 30 * time.Second
@@ -83,7 +84,7 @@ func (p *Planner) Assess(ctx context.Context, input PlanInput) (*AssessResult, e
 	resp, err := p.llmClient.Complete(ctx, core.LLMRequest{
 		TaskID:         input.TaskID,
 		Purpose:        core.PurposePlan,
-		Messages:       []core.LLMMessage{{Role: "system", Content: systemPrompt}, {Role: "user", Content: userPrompt}},
+		Messages:       []core.LLMMessage{{Role: "system", Content: assessmentSystemPrompt}, {Role: "user", Content: userPrompt}},
 		ResponseSchema: "plan_assessment",
 		Timeout:        timeout,
 	})
@@ -135,7 +136,7 @@ func (p *Planner) Generate(ctx context.Context, input PlanInput) (*core.Plan, er
 			Content: resp.Content,
 		}, core.LLMMessage{
 			Role:    "user",
-			Content: "你的输出不是有效的JSON。请严格只输出一个JSON对象，不要有任何其他文本。直接以 { 开头。格式：{\"goal\":\"...\",\"steps\":[{\"title\":\"...\",\"objective\":\"...\",\"expected_output\":\"...\"}]}",
+			Content: planJSONRetryPrompt,
 		})
 		retryResp, retryErr := p.llmClient.Complete(ctx, core.LLMRequest{
 			TaskID:         input.TaskID,
@@ -184,9 +185,9 @@ func (p *Planner) GenerateNoPlan(input PlanInput) *core.Plan {
 		Steps: []core.PlanStep{
 			{
 				StepID:         "step_1",
-				Title:          "直接执行",
+				Title:          "Execute request",
 				Objective:      input.UserInput,
-				ExpectedOutput: "完成用户请求",
+				ExpectedOutput: "Complete the user request",
 				Status:         core.StepPending,
 				CreatedBy:      "planner_skip",
 				RiskLevel:      core.RiskReadOnly,

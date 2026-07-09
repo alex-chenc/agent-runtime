@@ -46,7 +46,7 @@ func TestParsePlan_EmptyGoal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Goal != "执行用户任务" {
+	if plan.Goal != "Execute the user task" {
 		t.Fatalf("goal = %q, want fallback", plan.Goal)
 	}
 }
