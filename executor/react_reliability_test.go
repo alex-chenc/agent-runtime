@@ -103,8 +103,9 @@ func reliabilityDescriptor() core.ToolDescriptor {
 			"required": []any{"target_ids"},
 			"properties": map[string]any{
 				"target_ids": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "string"},
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "目标列表",
 				},
 				"max_rounds": map[string]any{
 					"type":    "integer",
@@ -252,5 +253,8 @@ func TestReActRequestUsesExactDynamicToolSchema(t *testing.T) {
 	}
 	if !strings.Contains(schemaText, `"target_ids"`) || !strings.Contains(schemaText, `"max_rounds"`) {
 		t.Fatalf("response schema does not contain exact tool args: %s", schemaText)
+	}
+	if strings.Contains(schemaText, "目标列表") {
+		t.Fatalf("response schema exposes localized descriptive text: %s", schemaText)
 	}
 }

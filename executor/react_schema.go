@@ -132,5 +132,30 @@ func cloneSchema(schema map[string]any) map[string]any {
 	if err := json.Unmarshal(encoded, &cloned); err != nil {
 		return nil
 	}
-	return cloned
+	sanitized, _ := sanitizeStructuredSchemaValue(cloned).(map[string]any)
+	return sanitized
+}
+
+func sanitizeStructuredSchemaValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		sanitized := make(map[string]any, len(typed))
+		for key, item := range typed {
+			switch key {
+			case "description", "title", "$comment", "examples":
+				continue
+			default:
+				sanitized[key] = sanitizeStructuredSchemaValue(item)
+			}
+		}
+		return sanitized
+	case []any:
+		sanitized := make([]any, 0, len(typed))
+		for _, item := range typed {
+			sanitized = append(sanitized, sanitizeStructuredSchemaValue(item))
+		}
+		return sanitized
+	default:
+		return typed
+	}
 }
