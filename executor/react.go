@@ -89,8 +89,32 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 	limit := &limiter.Limiter{}
 	var turns []core.ReactTurn
 	failedToolSignatures := make(map[string]int)
+	reasoningTurns := 0
+	asyncPollStreak := 0
 
-	for turnIdx := 0; turnIdx < e.config.MaxStepReactTurns; turnIdx++ {
+reactLoop:
+	for turnIdx := 0; reasoningTurns < e.config.MaxStepReactTurns; turnIdx++ {
+		if delay := asyncPollBackoff(e.config, asyncPollStreak); delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				result.Status = core.StepFailed
+				result.Error = &core.RuntimeError{
+					ErrorID:    e.idGen.Generate(),
+					Kind:       core.ErrInterrupt,
+					Stage:      "async_wait",
+					TaskID:     taskCtx.TaskID,
+					StepID:     step.StepID,
+					Message:    "context cancelled while waiting for a non-terminal operation",
+					OccurredAt: time.Now(),
+				}
+				result.Errors = append(result.Errors, *result.Error)
+				break reactLoop
+			case <-timer.C:
+			}
+		}
+
 		// Check context
 		if ctx.Err() != nil {
 			result.Status = core.StepFailed
@@ -139,6 +163,8 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 				result.Error = parseErr
 				break
 			}
+			reasoningTurns++
+			asyncPollStreak = 0
 			continue
 		}
 
@@ -166,10 +192,13 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 				result.Error = parseErr
 				break
 			}
+			reasoningTurns++
+			asyncPollStreak = 0
 			continue
 		}
 
 		limit.ResetParseFailures()
+		consumeReasoningTurn := true
 		if action.Type == core.ActionToolCall {
 			action.ToolArgs = mergeBoundToolArgs(action.ToolArgs, step.ToolArgs)
 		}
@@ -222,10 +251,17 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 			if obs.Status == core.ToolCallFailed {
 				limit.IncrToolFailures()
 			}
+			if isNonTerminalAsyncObservation(obs) {
+				consumeReasoningTurn = false
+				asyncPollStreak++
+			} else {
+				asyncPollStreak = 0
+			}
 			turn.EndedAt = time.Now()
 			turns = append(turns, turn)
 
 		case core.ActionStepResult:
+			asyncPollStreak = 0
 			validation := validateStepCompletion(step, action, result.ToolCalls)
 			if !validation.Passed {
 				validationErr := core.RuntimeError{
@@ -249,6 +285,7 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 			turns = append(turns, turn)
 
 		case core.ActionRequestExperience:
+			asyncPollStreak = 0
 			usage, progress, expErr := e.fetchExperience(ctx, taskCtx, step, action)
 			result.ExperienceUsage = append(result.ExperienceUsage, usage...)
 			turn.ProgressSummary = progress
@@ -259,6 +296,7 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 			turns = append(turns, turn)
 
 		case core.ActionFailStep:
+			asyncPollStreak = 0
 			result.Status = core.StepFailed
 			result.Error = &core.RuntimeError{
 				ErrorID:    e.idGen.Generate(),
@@ -274,11 +312,15 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 			turns = append(turns, turn)
 
 		default:
+			asyncPollStreak = 0
 			// Other action types -- treat as no progress for MVP
 			turn.EndedAt = time.Now()
 			turns = append(turns, turn)
 		}
 
+		if consumeReasoningTurn {
+			reasoningTurns++
+		}
 		if result.Status == core.StepCompleted || result.Status == core.StepFailed {
 			break
 		}
@@ -356,12 +398,14 @@ func (e *ReActExecutor) callLLM(ctx context.Context, taskCtx *StepContext, step 
 	}
 
 	return e.llmClient.Complete(ctx, core.LLMRequest{
-		CallID:   callID,
-		TaskID:   taskCtx.TaskID,
-		StepID:   step.StepID,
-		Purpose:  core.PurposeReact,
-		Messages: messages,
-		Timeout:  timeout,
+		CallID:         callID,
+		TaskID:         taskCtx.TaskID,
+		StepID:         step.StepID,
+		Purpose:        core.PurposeReact,
+		Messages:       messages,
+		ResponseSchema: "react_action",
+		ResponseFormat: e.reactResponseFormat(step),
+		Timeout:        timeout,
 	})
 }
 
@@ -426,13 +470,8 @@ Completion rules:
 				if turn.Observation == nil {
 					continue
 				}
-				previous.WriteString(fmt.Sprintf(
-					"\n  tool=%s call_id=%s status=%s observation=%s",
-					turn.Observation.ToolName,
-					turn.Observation.CallID,
-					turn.Observation.Status,
-					textutil.Truncate(firstNonEmpty(turn.Observation.Content, turn.Observation.Error, turn.Observation.Summary), 2000),
-				))
+				previous.WriteString("\n")
+				previous.WriteString(formatObservationForModel(turn.Observation))
 			}
 		}
 		messages = append(messages, core.LLMMessage{Role: "user", Content: previous.String()})
@@ -448,13 +487,9 @@ Completion rules:
 			})
 		}
 		if turn.Observation != nil {
-			obsContent := textutil.Truncate(turn.Observation.Content, 2000)
-			if turn.Observation.Outcome != nil {
-				obsContent = "outcome=" + textutil.SummarizeJSON(turn.Observation.Outcome, 2000) + " raw_content=" + obsContent
-			}
 			messages = append(messages, core.LLMMessage{
 				Role:    "user",
-				Content: fmt.Sprintf("Observation from %s: %s", turn.Observation.ToolName, obsContent),
+				Content: formatObservationForModel(turn.Observation),
 			})
 		}
 		if turn.ProgressSummary != "" {
@@ -782,6 +817,74 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 	}
 
 	return obs, record, nil
+}
+
+func formatObservationForModel(observation *core.Observation) string {
+	if observation == nil {
+		return "Tool observation: unavailable"
+	}
+	var builder strings.Builder
+	builder.WriteString("Tool observation:")
+	builder.WriteString("\n- tool_name: ")
+	builder.WriteString(observation.ToolName)
+	builder.WriteString("\n- call_id: ")
+	builder.WriteString(observation.CallID)
+	builder.WriteString("\n- call_status: ")
+	builder.WriteString(string(observation.Status))
+	if observation.Outcome != nil {
+		builder.WriteString("\n- operation_status: ")
+		builder.WriteString(string(observation.Outcome.OperationStatus))
+		builder.WriteString("\n- terminal: ")
+		builder.WriteString(fmt.Sprintf("%t", observation.Outcome.Terminal))
+		builder.WriteString("\n- outcome: ")
+		builder.WriteString(textutil.SummarizeJSON(observation.Outcome, 2000))
+	}
+	if observation.Error != "" {
+		builder.WriteString("\n- error: ")
+		builder.WriteString(textutil.Truncate(observation.Error, 2000))
+	}
+	if observation.Summary != "" {
+		builder.WriteString("\n- summary: ")
+		builder.WriteString(textutil.Truncate(observation.Summary, 1000))
+	}
+	if observation.Content != "" {
+		builder.WriteString("\n- content: ")
+		builder.WriteString(textutil.Truncate(observation.Content, 2000))
+	}
+	return builder.String()
+}
+
+func isNonTerminalAsyncObservation(observation *core.Observation) bool {
+	if observation == nil ||
+		observation.Status != core.ToolCallSuccess ||
+		observation.Outcome == nil ||
+		observation.Outcome.Terminal {
+		return false
+	}
+	return observation.Outcome.OperationStatus == core.OperationAccepted ||
+		observation.Outcome.OperationStatus == core.OperationRunning
+}
+
+func asyncPollBackoff(config core.RuntimeConfig, streak int) time.Duration {
+	if streak <= 0 || config.AsyncPollInitialBackoff <= 0 {
+		return 0
+	}
+	delay := config.AsyncPollInitialBackoff
+	const maxDuration = time.Duration(1<<63 - 1)
+	for count := 1; count < streak; count++ {
+		if config.AsyncPollMaxBackoff > 0 && delay >= config.AsyncPollMaxBackoff {
+			return config.AsyncPollMaxBackoff
+		}
+		if delay > maxDuration/2 {
+			delay = maxDuration
+			break
+		}
+		delay *= 2
+	}
+	if config.AsyncPollMaxBackoff > 0 && delay > config.AsyncPollMaxBackoff {
+		return config.AsyncPollMaxBackoff
+	}
+	return delay
 }
 
 func operationStatus(outcome *core.ToolOutcome) string {

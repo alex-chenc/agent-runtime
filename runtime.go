@@ -680,6 +680,18 @@ func (r *Runtime) UpdateConfig(taskID string, patch ConfigPatch) error {
 			NewValue: fmt.Sprintf("%d", *patch.MaxToolCalls), OccurredAt: now,
 		})
 	}
+	if patch.AsyncPollInitialBackoff != nil && oldCfg.AsyncPollInitialBackoff != *patch.AsyncPollInitialBackoff {
+		taskCtx.ConfigChanges = append(taskCtx.ConfigChanges, ConfigChange{
+			Field: "async_poll_initial_backoff", OldValue: oldCfg.AsyncPollInitialBackoff.String(),
+			NewValue: patch.AsyncPollInitialBackoff.String(), OccurredAt: now,
+		})
+	}
+	if patch.AsyncPollMaxBackoff != nil && oldCfg.AsyncPollMaxBackoff != *patch.AsyncPollMaxBackoff {
+		taskCtx.ConfigChanges = append(taskCtx.ConfigChanges, ConfigChange{
+			Field: "async_poll_max_backoff", OldValue: oldCfg.AsyncPollMaxBackoff.String(),
+			NewValue: patch.AsyncPollMaxBackoff.String(), OccurredAt: now,
+		})
+	}
 	if patch.EnableReflection != nil && oldCfg.EnableReflection != *patch.EnableReflection {
 		taskCtx.ConfigChanges = append(taskCtx.ConfigChanges, ConfigChange{
 			Field: "enable_reflection", OldValue: fmt.Sprintf("%t", oldCfg.EnableReflection),

@@ -690,36 +690,41 @@ func (tr *TaskResult) ToJSON() ([]byte, error) {
 // ===== Configuration =====
 
 type RuntimeConfig struct {
-	MaxTotalTurns         int           `json:"max_total_turns"`
-	MaxPlanSteps          int           `json:"max_plan_steps"`
-	MaxStepReactTurns     int           `json:"max_step_react_turns"`
-	MaxToolCalls          int           `json:"max_tool_calls"`
-	MaxToolCallsPerStep   int           `json:"max_tool_calls_per_step"`
-	MaxToolFailures       int           `json:"max_tool_failures"`
-	MaxModelFailures      int           `json:"max_model_failures"`
-	MaxParseFailures      int           `json:"max_parse_failures"`
-	MaxNoProgressTurns    int           `json:"max_no_progress_turns"`
-	TaskTimeout           time.Duration `json:"task_timeout"`
-	ModelTimeout          time.Duration `json:"model_timeout"`
-	ToolTimeout           time.Duration `json:"tool_timeout"`
-	HookTimeout           time.Duration `json:"hook_timeout"`
-	EnableReflection      bool          `json:"enable_reflection"`
-	EnableAudit           bool          `json:"enable_audit"`
-	EnableCorrection      bool          `json:"enable_correction"`
-	EnableExperience      bool          `json:"enable_experience"`
-	AuditEveryNSteps      int           `json:"audit_every_n_steps"`
-	AuditEveryNTurns      int           `json:"audit_every_n_turns"`
-	MaxAudits             int           `json:"max_audits"`
-	MaxCorrections        int           `json:"max_corrections"`
-	MaxReflections        int           `json:"max_reflections"`
-	MaxStepRetries        int           `json:"max_step_retries"`
-	AllowDynamicNewSteps  bool          `json:"allow_dynamic_new_steps"`
-	AllowSkipFailedStep   bool          `json:"allow_skip_failed_step"`
-	AllowBestEffortAnswer bool          `json:"allow_best_effort_answer"`
-	AllowHighRiskTools    bool          `json:"allow_high_risk_tools"`
-	AllowDangerousTools   bool          `json:"allow_dangerous_tools"`
-	DisabledTools         []string      `json:"disabled_tools,omitempty"`
-	FailOnHookError       bool          `json:"fail_on_hook_error"`
+	MaxTotalTurns       int           `json:"max_total_turns"`
+	MaxPlanSteps        int           `json:"max_plan_steps"`
+	MaxStepReactTurns   int           `json:"max_step_react_turns"`
+	MaxToolCalls        int           `json:"max_tool_calls"`
+	MaxToolCallsPerStep int           `json:"max_tool_calls_per_step"`
+	MaxToolFailures     int           `json:"max_tool_failures"`
+	MaxModelFailures    int           `json:"max_model_failures"`
+	MaxParseFailures    int           `json:"max_parse_failures"`
+	MaxNoProgressTurns  int           `json:"max_no_progress_turns"`
+	TaskTimeout         time.Duration `json:"task_timeout"`
+	ModelTimeout        time.Duration `json:"model_timeout"`
+	ToolTimeout         time.Duration `json:"tool_timeout"`
+	HookTimeout         time.Duration `json:"hook_timeout"`
+	// AsyncPollInitialBackoff and AsyncPollMaxBackoff bound the delay before the
+	// model decides how to continue after a successful non-terminal tool outcome.
+	// They do not select or invoke a completion tool on the model's behalf.
+	AsyncPollInitialBackoff time.Duration `json:"async_poll_initial_backoff"`
+	AsyncPollMaxBackoff     time.Duration `json:"async_poll_max_backoff"`
+	EnableReflection        bool          `json:"enable_reflection"`
+	EnableAudit             bool          `json:"enable_audit"`
+	EnableCorrection        bool          `json:"enable_correction"`
+	EnableExperience        bool          `json:"enable_experience"`
+	AuditEveryNSteps        int           `json:"audit_every_n_steps"`
+	AuditEveryNTurns        int           `json:"audit_every_n_turns"`
+	MaxAudits               int           `json:"max_audits"`
+	MaxCorrections          int           `json:"max_corrections"`
+	MaxReflections          int           `json:"max_reflections"`
+	MaxStepRetries          int           `json:"max_step_retries"`
+	AllowDynamicNewSteps    bool          `json:"allow_dynamic_new_steps"`
+	AllowSkipFailedStep     bool          `json:"allow_skip_failed_step"`
+	AllowBestEffortAnswer   bool          `json:"allow_best_effort_answer"`
+	AllowHighRiskTools      bool          `json:"allow_high_risk_tools"`
+	AllowDangerousTools     bool          `json:"allow_dangerous_tools"`
+	DisabledTools           []string      `json:"disabled_tools,omitempty"`
+	FailOnHookError         bool          `json:"fail_on_hook_error"`
 
 	// Context budget and compression settings
 	MaxContextTokens      int     `json:"max_context_tokens"`
@@ -739,6 +744,7 @@ func DefaultConfig() RuntimeConfig {
 		MaxModelFailures: 5, MaxParseFailures: 3, MaxNoProgressTurns: 3,
 		TaskTimeout: 10 * time.Minute, ModelTimeout: 60 * time.Second,
 		ToolTimeout: 60 * time.Second, HookTimeout: 10 * time.Second,
+		AsyncPollInitialBackoff: 0, AsyncPollMaxBackoff: 0,
 		EnableReflection: true, EnableAudit: true, EnableCorrection: true,
 		EnableExperience: true, AuditEveryNSteps: 3, AuditEveryNTurns: 0,
 		MaxAudits: 5, MaxCorrections: 3, MaxReflections: 5, MaxStepRetries: 2,
@@ -788,6 +794,15 @@ func (c RuntimeConfig) Validate() error {
 	if c.ToolTimeout <= 0 {
 		return fmt.Errorf("config: ToolTimeout must be > 0")
 	}
+	if c.AsyncPollInitialBackoff < 0 {
+		return fmt.Errorf("config: AsyncPollInitialBackoff must be >= 0")
+	}
+	if c.AsyncPollMaxBackoff < 0 {
+		return fmt.Errorf("config: AsyncPollMaxBackoff must be >= 0")
+	}
+	if c.AsyncPollMaxBackoff > 0 && c.AsyncPollInitialBackoff > c.AsyncPollMaxBackoff {
+		return fmt.Errorf("config: AsyncPollInitialBackoff must be <= AsyncPollMaxBackoff")
+	}
 	if c.HookTimeout <= 0 {
 		return fmt.Errorf("config: HookTimeout must be > 0")
 	}
@@ -831,27 +846,29 @@ func (c RuntimeConfig) Validate() error {
 }
 
 type ConfigPatch struct {
-	MaxTotalTurns         *int           `json:"max_total_turns,omitempty"`
-	MaxPlanSteps          *int           `json:"max_plan_steps,omitempty"`
-	MaxStepReactTurns     *int           `json:"max_step_react_turns,omitempty"`
-	MaxToolCalls          *int           `json:"max_tool_calls,omitempty"`
-	MaxToolCallsPerStep   *int           `json:"max_tool_calls_per_step,omitempty"`
-	TaskTimeout           *time.Duration `json:"task_timeout,omitempty"`
-	ModelTimeout          *time.Duration `json:"model_timeout,omitempty"`
-	ToolTimeout           *time.Duration `json:"tool_timeout,omitempty"`
-	EnableReflection      *bool          `json:"enable_reflection,omitempty"`
-	EnableAudit           *bool          `json:"enable_audit,omitempty"`
-	EnableCorrection      *bool          `json:"enable_correction,omitempty"`
-	MaxStepRetries        *int           `json:"max_step_retries,omitempty"`
-	DisabledTools         []string       `json:"disabled_tools,omitempty"`
-	MaxContextTokens      *int           `json:"max_context_tokens,omitempty"`
-	ReservedOutputTokens  *int           `json:"reserved_output_tokens,omitempty"`
-	EnableContextCompress *bool          `json:"enable_context_compress,omitempty"`
-	ToolCompressRatio     *float64       `json:"tool_compress_ratio,omitempty"`
-	StepCompressRatio     *float64       `json:"step_compress_ratio,omitempty"`
-	LLMCompressRatio      *float64       `json:"llm_compress_ratio,omitempty"`
-	CompressTargetRatio   *float64       `json:"compress_target_ratio,omitempty"`
-	RecentTurnsToKeep     *int           `json:"recent_turns_to_keep,omitempty"`
+	MaxTotalTurns           *int           `json:"max_total_turns,omitempty"`
+	MaxPlanSteps            *int           `json:"max_plan_steps,omitempty"`
+	MaxStepReactTurns       *int           `json:"max_step_react_turns,omitempty"`
+	MaxToolCalls            *int           `json:"max_tool_calls,omitempty"`
+	MaxToolCallsPerStep     *int           `json:"max_tool_calls_per_step,omitempty"`
+	TaskTimeout             *time.Duration `json:"task_timeout,omitempty"`
+	ModelTimeout            *time.Duration `json:"model_timeout,omitempty"`
+	ToolTimeout             *time.Duration `json:"tool_timeout,omitempty"`
+	AsyncPollInitialBackoff *time.Duration `json:"async_poll_initial_backoff,omitempty"`
+	AsyncPollMaxBackoff     *time.Duration `json:"async_poll_max_backoff,omitempty"`
+	EnableReflection        *bool          `json:"enable_reflection,omitempty"`
+	EnableAudit             *bool          `json:"enable_audit,omitempty"`
+	EnableCorrection        *bool          `json:"enable_correction,omitempty"`
+	MaxStepRetries          *int           `json:"max_step_retries,omitempty"`
+	DisabledTools           []string       `json:"disabled_tools,omitempty"`
+	MaxContextTokens        *int           `json:"max_context_tokens,omitempty"`
+	ReservedOutputTokens    *int           `json:"reserved_output_tokens,omitempty"`
+	EnableContextCompress   *bool          `json:"enable_context_compress,omitempty"`
+	ToolCompressRatio       *float64       `json:"tool_compress_ratio,omitempty"`
+	StepCompressRatio       *float64       `json:"step_compress_ratio,omitempty"`
+	LLMCompressRatio        *float64       `json:"llm_compress_ratio,omitempty"`
+	CompressTargetRatio     *float64       `json:"compress_target_ratio,omitempty"`
+	RecentTurnsToKeep       *int           `json:"recent_turns_to_keep,omitempty"`
 }
 
 func (c RuntimeConfig) ApplyPatch(patch ConfigPatch) RuntimeConfig {
@@ -879,6 +896,12 @@ func (c RuntimeConfig) ApplyPatch(patch ConfigPatch) RuntimeConfig {
 	}
 	if patch.ToolTimeout != nil {
 		result.ToolTimeout = *patch.ToolTimeout
+	}
+	if patch.AsyncPollInitialBackoff != nil {
+		result.AsyncPollInitialBackoff = *patch.AsyncPollInitialBackoff
+	}
+	if patch.AsyncPollMaxBackoff != nil {
+		result.AsyncPollMaxBackoff = *patch.AsyncPollMaxBackoff
 	}
 	if patch.EnableReflection != nil {
 		result.EnableReflection = *patch.EnableReflection

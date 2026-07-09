@@ -169,8 +169,53 @@ func (p *Planner) Generate(ctx context.Context, input PlanInput) (*core.Plan, er
 		plan.Steps[i].Status = core.StepPending
 		plan.Steps[i].CreatedBy = "planner"
 	}
+	normalizePlanStepRiskLevels(plan, input.Tools)
 
 	return plan, nil
+}
+
+func normalizePlanStepRiskLevels(plan *core.Plan, descriptors []core.ToolDescriptor) {
+	if plan == nil || len(descriptors) == 0 {
+		return
+	}
+	risks := make(map[string]core.RiskLevel, len(descriptors))
+	for _, descriptor := range descriptors {
+		risks[descriptor.Name] = descriptor.RiskLevel
+	}
+	for index := range plan.Steps {
+		var (
+			highest core.RiskLevel
+			found   bool
+		)
+		for _, toolName := range plan.Steps[index].SuggestedTools {
+			risk, ok := risks[toolName]
+			if !ok {
+				continue
+			}
+			if !found || riskRank(risk) > riskRank(highest) {
+				highest = risk
+			}
+			found = true
+		}
+		if found {
+			plan.Steps[index].RiskLevel = highest
+		}
+	}
+}
+
+func riskRank(risk core.RiskLevel) int {
+	switch risk {
+	case core.RiskDangerous:
+		return 4
+	case core.RiskHigh:
+		return 3
+	case core.RiskLow:
+		return 2
+	case core.RiskReadOnly:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // GenerateNoPlan creates a minimal single-step plan for simple tasks that don't need structured planning.

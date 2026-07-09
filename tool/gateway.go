@@ -117,6 +117,15 @@ func (w *GatewayWrapper) Cancel(ctx context.Context, taskID string, callID strin
 	return w.gateway.Cancel(ctx, taskID, callID)
 }
 
+// ToolDescriptors exposes a snapshot of the validated runtime registry so the
+// executor can constrain structured model output to the exact current tools.
+func (w *GatewayWrapper) ToolDescriptors() []core.ToolDescriptor {
+	if w == nil || w.registry == nil {
+		return nil
+	}
+	return w.registry.List()
+}
+
 func validateArgs(schema map[string]any, args map[string]any) error {
 	if len(schema) == 0 {
 		return nil
