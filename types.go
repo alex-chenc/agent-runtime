@@ -15,6 +15,8 @@ type CorrectionActionType = core.CorrectionActionType
 type HookEventType = core.HookEventType
 type LLMPurpose = core.LLMPurpose
 type ToolCallStatus = core.ToolCallStatus
+type OperationStatus = core.OperationStatus
+type GoalOutcome = core.GoalOutcome
 type ToolPolicyDecision = core.ToolPolicyDecision
 type ErrorKind = core.ErrorKind
 
@@ -113,23 +115,23 @@ const (
 )
 
 const (
-	HookTaskStarted        = core.HookTaskStarted
-	HookExperienceLoaded   = core.HookExperienceLoaded
-	HookPlanCreated        = core.HookPlanCreated
-	HookStepStarted        = core.HookStepStarted
-	HookModelCallStarted   = core.HookModelCallStarted
-	HookModelCallFinished  = core.HookModelCallFinished
-	HookToolCallStarted    = core.HookToolCallStarted
-	HookToolCallFinished   = core.HookToolCallFinished
-	HookStepCompleted      = core.HookStepCompleted
-	HookStepFailed         = core.HookStepFailed
-	HookAuditStarted       = core.HookAuditStarted
-	HookAuditFinished      = core.HookAuditFinished
-	HookReflectionStarted  = core.HookReflectionStarted
-	HookReflectionFinished = core.HookReflectionFinished
-	HookCorrectionApplied  = core.HookCorrectionApplied
-	HookStepRetrying       = core.HookStepRetrying
-	HookStepSkipped        = core.HookStepSkipped
+	HookTaskStarted              = core.HookTaskStarted
+	HookExperienceLoaded         = core.HookExperienceLoaded
+	HookPlanCreated              = core.HookPlanCreated
+	HookStepStarted              = core.HookStepStarted
+	HookModelCallStarted         = core.HookModelCallStarted
+	HookModelCallFinished        = core.HookModelCallFinished
+	HookToolCallStarted          = core.HookToolCallStarted
+	HookToolCallFinished         = core.HookToolCallFinished
+	HookStepCompleted            = core.HookStepCompleted
+	HookStepFailed               = core.HookStepFailed
+	HookAuditStarted             = core.HookAuditStarted
+	HookAuditFinished            = core.HookAuditFinished
+	HookReflectionStarted        = core.HookReflectionStarted
+	HookReflectionFinished       = core.HookReflectionFinished
+	HookCorrectionApplied        = core.HookCorrectionApplied
+	HookStepRetrying             = core.HookStepRetrying
+	HookStepSkipped              = core.HookStepSkipped
 	HookConfigChanged            = core.HookConfigChanged
 	HookTaskInterrupted          = core.HookTaskInterrupted
 	HookTaskFinished             = core.HookTaskFinished
@@ -166,6 +168,21 @@ const (
 	ToolCallFailed    = core.ToolCallFailed
 	ToolCallTimeout   = core.ToolCallTimeout
 	ToolCallCancelled = core.ToolCallCancelled
+)
+
+const (
+	OperationAccepted  = core.OperationAccepted
+	OperationRunning   = core.OperationRunning
+	OperationSucceeded = core.OperationSucceeded
+	OperationFailed    = core.OperationFailed
+	OperationSkipped   = core.OperationSkipped
+)
+
+const (
+	GoalSucceeded          = core.GoalSucceeded
+	GoalPartiallySucceeded = core.GoalPartiallySucceeded
+	GoalFailed             = core.GoalFailed
+	GoalNeedsInput         = core.GoalNeedsInput
 )
 
 const (

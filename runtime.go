@@ -741,6 +741,7 @@ func (r *Runtime) buildResult(
 	return &TaskResult{
 		TaskID:      taskCtx.TaskID,
 		Status:      status,
+		GoalOutcome: deriveGoalOutcome(status, completed, failed),
 		ExitReason:  taskCtx.ExitReason,
 		FinalAnswer: finalAnswer,
 		Completion: CompletionSummary{
@@ -781,6 +782,16 @@ func (r *Runtime) buildResult(
 		EndedAt:   taskCtx.EndedAt,
 		Metadata:  taskCtx.Input.Metadata,
 	}
+}
+
+func deriveGoalOutcome(status TaskStatus, completed, failed int) GoalOutcome {
+	if failed == 0 && (status == StatusCompleted || completed > 0) {
+		return GoalSucceeded
+	}
+	if completed > 0 && failed > 0 {
+		return GoalPartiallySucceeded
+	}
+	return GoalFailed
 }
 
 type recordingLLMClient struct {
@@ -938,6 +949,10 @@ func buildSummaryPrompt(status TaskStatus, reason ExitReason, steps []StepExecut
 			b.WriteString(turn.Observation.CallID)
 			b.WriteString(" status=")
 			b.WriteString(string(turn.Observation.Status))
+			if turn.Observation.Outcome != nil {
+				b.WriteString(" outcome=")
+				b.WriteString(textutil.SummarizeJSON(turn.Observation.Outcome, 2000))
+			}
 			if turn.Observation.Content != "" {
 				b.WriteString(" content=")
 				b.WriteString(textutil.Truncate(turn.Observation.Content, 2000))

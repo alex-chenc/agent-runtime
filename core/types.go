@@ -217,6 +217,31 @@ const (
 	ToolCallCancelled ToolCallStatus = "cancelled"
 )
 
+// OperationStatus describes the business state returned by a successful tool
+// transport call. A successful call can still represent an accepted or running
+// asynchronous operation rather than a completed business outcome.
+type OperationStatus string
+
+const (
+	OperationAccepted  OperationStatus = "accepted"
+	OperationRunning   OperationStatus = "running"
+	OperationSucceeded OperationStatus = "succeeded"
+	OperationFailed    OperationStatus = "failed"
+	OperationSkipped   OperationStatus = "skipped"
+)
+
+// GoalOutcome separates the user's business outcome from the runtime lifecycle
+// status. StatusCompleted means that the runtime stopped normally; it does not
+// by itself prove that every requested operation succeeded.
+type GoalOutcome string
+
+const (
+	GoalSucceeded          GoalOutcome = "succeeded"
+	GoalPartiallySucceeded GoalOutcome = "partially_succeeded"
+	GoalFailed             GoalOutcome = "failed"
+	GoalNeedsInput         GoalOutcome = "needs_input"
+)
+
 type ToolPolicyDecision string
 
 const (
@@ -412,6 +437,21 @@ type Observation struct {
 	Summary  string         `json:"summary"`
 	Error    string         `json:"error,omitempty"`
 	Duration time.Duration  `json:"duration"`
+	Outcome  *ToolOutcome   `json:"outcome,omitempty"`
+}
+
+// ToolOutcome is a domain-neutral, evidence-oriented representation of a tool
+// result. Facts and references intentionally remain structured maps so callers
+// can describe arbitrary business domains without teaching Runtime tool names.
+type ToolOutcome struct {
+	OperationStatus       OperationStatus   `json:"operation_status"`
+	Terminal              bool              `json:"terminal"`
+	Message               string            `json:"message,omitempty"`
+	OperationRef          map[string]string `json:"operation_ref,omitempty"`
+	Facts                 []map[string]any  `json:"facts,omitempty"`
+	Artifacts             []map[string]any  `json:"artifacts,omitempty"`
+	SideEffects           []map[string]any  `json:"side_effects,omitempty"`
+	SatisfiesCapabilities []string          `json:"satisfies_capabilities,omitempty"`
 }
 
 type ToolCallRecord struct {
@@ -428,6 +468,7 @@ type ToolCallRecord struct {
 	RiskLevel       RiskLevel      `json:"risk_level"`
 	StartedAt       time.Time      `json:"started_at"`
 	EndedAt         time.Time      `json:"ended_at"`
+	Outcome         *ToolOutcome   `json:"outcome,omitempty"`
 }
 
 type ToolValidationStage string
@@ -618,6 +659,7 @@ type RuntimeMetrics struct {
 type TaskResult struct {
 	TaskID             string                 `json:"task_id"`
 	Status             TaskStatus             `json:"status"`
+	GoalOutcome        GoalOutcome            `json:"goal_outcome"`
 	ExitReason         ExitReason             `json:"exit_reason"`
 	FinalAnswer        string                 `json:"final_answer"`
 	Completion         CompletionSummary      `json:"completion"`
@@ -940,6 +982,7 @@ type ToolResponse struct {
 	StartedAt    time.Time         `json:"started_at"`
 	EndedAt      time.Time         `json:"ended_at"`
 	Metadata     map[string]string `json:"metadata,omitempty"`
+	Outcome      *ToolOutcome      `json:"outcome,omitempty"`
 }
 
 type ExperienceProvider interface {

@@ -226,9 +226,25 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 			turns = append(turns, turn)
 
 		case core.ActionStepResult:
-			result.Status = core.StepCompleted
-			result.Result = action.StepResult
-			result.Evidence = action.Evidence
+			validation := validateStepCompletion(step, action, result.ToolCalls)
+			if !validation.Passed {
+				validationErr := core.RuntimeError{
+					ErrorID:     e.idGen.Generate(),
+					Kind:        core.ErrToolCall,
+					Stage:       "completion_validation",
+					TaskID:      taskCtx.TaskID,
+					StepID:      step.StepID,
+					Message:     validation.Reason,
+					Recoverable: true,
+					OccurredAt:  time.Now(),
+				}
+				result.Errors = append(result.Errors, validationErr)
+				turn.ProgressSummary = "Step completion rejected: " + validation.Reason
+			} else {
+				result.Status = core.StepCompleted
+				result.Result = action.StepResult
+				result.Evidence = action.Evidence
+			}
 			turn.EndedAt = time.Now()
 			turns = append(turns, turn)
 
@@ -371,7 +387,12 @@ You must respond with a JSON object:
   "step_result": {"result": "...", "evidence": ["..."], "confidence": "low|medium|high"},
   "experience_request": {"query": "...", "reason": "..."},
   "failure": {"reason": "...", "recoverable": true}
-}`)
+}
+
+Completion rules:
+- A successful tool call can still be non-terminal. operation_status=accepted or running never proves that the business operation completed.
+- When a step uses tools, cite the exact successful terminal call_id values in step_result.evidence.
+- After a tool failure, retry with corrected arguments, use an allowed alternative, request input, or fail the step. Never report a failed call as completed.`)
 	}
 
 	// Append step context
@@ -428,6 +449,9 @@ You must respond with a JSON object:
 		}
 		if turn.Observation != nil {
 			obsContent := textutil.Truncate(turn.Observation.Content, 2000)
+			if turn.Observation.Outcome != nil {
+				obsContent = "outcome=" + textutil.SummarizeJSON(turn.Observation.Outcome, 2000) + " raw_content=" + obsContent
+			}
 			messages = append(messages, core.LLMMessage{
 				Role:    "user",
 				Content: fmt.Sprintf("Observation from %s: %s", turn.Observation.ToolName, obsContent),
@@ -685,6 +709,7 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 	obs.Status = resp.Status
 	obs.Content = resp.Content
 	obs.Summary = resp.Summary
+	obs.Outcome = resp.Outcome
 	if resp.ErrorMessage != "" {
 		obs.Error = resp.ErrorMessage
 	}
@@ -695,6 +720,7 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 	}
 	record.ResultSummary = resp.Summary
 	record.ErrorMessage = resp.ErrorMessage
+	record.Outcome = resp.Outcome
 	if !resp.StartedAt.IsZero() {
 		record.StartedAt = resp.StartedAt
 	}
@@ -744,16 +770,29 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 			StepID: step.StepID,
 			Type:   core.HookToolCallFinished,
 			Payload: map[string]interface{}{
-				"call_id":        callID,
-				"tool_name":      action.ToolName,
-				"status":         string(record.Status),
-				"result_summary": resp.Summary,
-				"duration_ms":    time.Since(start).Milliseconds(),
+				"call_id":          callID,
+				"tool_name":        action.ToolName,
+				"status":           string(record.Status),
+				"result_summary":   resp.Summary,
+				"operation_status": operationStatus(resp.Outcome),
+				"terminal":         operationTerminal(resp.Outcome),
+				"duration_ms":      time.Since(start).Milliseconds(),
 			},
 		})
 	}
 
 	return obs, record, nil
+}
+
+func operationStatus(outcome *core.ToolOutcome) string {
+	if outcome == nil {
+		return ""
+	}
+	return string(outcome.OperationStatus)
+}
+
+func operationTerminal(outcome *core.ToolOutcome) bool {
+	return outcome != nil && outcome.Terminal
 }
 
 func mergeBoundToolArgs(modelArgs, boundArgs map[string]any) map[string]any {

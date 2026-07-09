@@ -15,6 +15,7 @@ type ReactTurn = core.ReactTurn
 type ReactAction = core.ReactAction
 type Observation = core.Observation
 type ToolCallRecord = core.ToolCallRecord
+type ToolOutcome = core.ToolOutcome
 type ExperienceUsage = core.ExperienceUsage
 type RuntimeError = core.RuntimeError
 type ExitDecision = core.ExitDecision
