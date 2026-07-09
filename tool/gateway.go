@@ -51,6 +51,17 @@ func (w *GatewayWrapper) CallValidated(ctx context.Context, req core.ToolRequest
 			Message:  err.Error(),
 		}
 	}
+	if preparer, ok := w.gateway.(core.ToolRequestPreparer); ok {
+		prepared, prepareErr := preparer.Prepare(ctx, req)
+		if prepareErr != nil {
+			return core.ToolResponse{}, &core.ToolCallValidationError{
+				Stage:    core.ToolValidationPreparation,
+				ToolName: req.ToolName,
+				Message:  prepareErr.Error(),
+			}
+		}
+		req = prepared
+	}
 	if err := validateArgs(desc.ArgsSchema, req.Args); err != nil {
 		return core.ToolResponse{}, &core.ToolCallValidationError{
 			Stage:    core.ToolValidationArguments,

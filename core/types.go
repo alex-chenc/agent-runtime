@@ -433,10 +433,11 @@ type ToolCallRecord struct {
 type ToolValidationStage string
 
 const (
-	ToolValidationDescriptor ToolValidationStage = "descriptor"
-	ToolValidationArguments  ToolValidationStage = "arguments"
-	ToolValidationPolicy     ToolValidationStage = "policy"
-	ToolValidationStepScope  ToolValidationStage = "step_tool_scope"
+	ToolValidationDescriptor  ToolValidationStage = "descriptor"
+	ToolValidationPreparation ToolValidationStage = "preparation"
+	ToolValidationArguments   ToolValidationStage = "arguments"
+	ToolValidationPolicy      ToolValidationStage = "policy"
+	ToolValidationStepScope   ToolValidationStage = "step_tool_scope"
 )
 
 // ToolCallValidationError identifies failures that happen before the concrete
@@ -908,6 +909,12 @@ type LLMResponse struct {
 type ToolGateway interface {
 	Call(ctx context.Context, req ToolRequest) (ToolResponse, error)
 	Cancel(ctx context.Context, taskID string, callID string) error
+}
+
+// ToolRequestPreparer is an optional gateway capability used to resolve
+// arguments derived from earlier tool results before runtime schema validation.
+type ToolRequestPreparer interface {
+	Prepare(ctx context.Context, req ToolRequest) (ToolRequest, error)
 }
 
 type ToolRequest struct {

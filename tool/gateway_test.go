@@ -9,17 +9,31 @@ import (
 )
 
 type recordingGateway struct {
-	called bool
+	called      bool
+	lastRequest core.ToolRequest
 }
 
 func (g *recordingGateway) Call(_ context.Context, req core.ToolRequest) (core.ToolResponse, error) {
 	g.called = true
+	g.lastRequest = req
 	return core.ToolResponse{
 		CallID:   req.CallID,
 		ToolName: req.ToolName,
 		Status:   core.ToolCallSuccess,
 		Summary:  "ok",
 	}, nil
+}
+
+type preparingGateway struct {
+	recordingGateway
+}
+
+func (g *preparingGateway) Prepare(_ context.Context, req core.ToolRequest) (core.ToolRequest, error) {
+	if req.Args == nil {
+		req.Args = map[string]any{}
+	}
+	req.Args["query"] = "CVE-2021-45340"
+	return req, nil
 }
 
 func (g *recordingGateway) Cancel(context.Context, string, string) error {
@@ -87,6 +101,37 @@ func TestGatewayWrapper_ValidatesArgTypes(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected validation error for wrong arg type")
+	}
+}
+
+func TestGatewayWrapper_PreparesDerivedArgsBeforeValidation(t *testing.T) {
+	registry, err := NewRegistry([]core.ToolDescriptor{{
+		Name:      "search",
+		RiskLevel: core.RiskReadOnly,
+		ArgsSchema: map[string]any{
+			"type":     "object",
+			"required": []any{"query"},
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string"},
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway := &preparingGateway{}
+	wrapper := NewGatewayWrapper(gateway, registry, &DefaultPolicy{}, nil, 0)
+	_, err = wrapper.CallValidated(context.Background(), core.ToolRequest{
+		TaskID:   "task-1",
+		StepID:   "step-1",
+		ToolName: "search",
+		Args:     map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("prepared request was rejected: %v", err)
+	}
+	if gateway.lastRequest.Args["query"] != "CVE-2021-45340" {
+		t.Fatalf("prepared args = %#v", gateway.lastRequest.Args)
 	}
 }
 
