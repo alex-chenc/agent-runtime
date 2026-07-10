@@ -248,6 +248,9 @@ func TestReActRequestUsesExactDynamicToolSchema(t *testing.T) {
 	if format == nil || format.Type != "json_schema" || format.JSONSchema == nil {
 		t.Fatalf("response format = %#v, want json_schema", format)
 	}
+	if !format.JSONSchema.Strict {
+		t.Fatal("response schema must use strict structured output")
+	}
 	var schema map[string]any
 	if err := json.Unmarshal(format.JSONSchema.Schema, &schema); err != nil {
 		t.Fatalf("unmarshal response schema: %v", err)

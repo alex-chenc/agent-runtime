@@ -102,7 +102,10 @@ func (e *ReActExecutor) reactResponseFormat(step *core.PlanStep) *core.ResponseF
 			Name:        "react_action",
 			Description: "One valid ReAct action constrained to the current runtime tool registry.",
 			Schema:      schema,
-			Strict:      false,
+			// Tool arguments are an executable contract. Strict structured output
+			// prevents the model from emitting plausible aliases or omitting a
+			// required field and relying on a later validation-and-retry loop.
+			Strict: true,
 		},
 	}
 }
