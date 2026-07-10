@@ -692,6 +692,12 @@ func (r *Runtime) UpdateConfig(taskID string, patch ConfigPatch) error {
 			NewValue: patch.AsyncPollMaxBackoff.String(), OccurredAt: now,
 		})
 	}
+	if patch.MaxAsyncPollAttempts != nil && oldCfg.MaxAsyncPollAttempts != *patch.MaxAsyncPollAttempts {
+		taskCtx.ConfigChanges = append(taskCtx.ConfigChanges, ConfigChange{
+			Field: "max_async_poll_attempts", OldValue: fmt.Sprintf("%d", oldCfg.MaxAsyncPollAttempts),
+			NewValue: fmt.Sprintf("%d", *patch.MaxAsyncPollAttempts), OccurredAt: now,
+		})
+	}
 	if patch.EnableReflection != nil && oldCfg.EnableReflection != *patch.EnableReflection {
 		taskCtx.ConfigChanges = append(taskCtx.ConfigChanges, ConfigChange{
 			Field: "enable_reflection", OldValue: fmt.Sprintf("%t", oldCfg.EnableReflection),

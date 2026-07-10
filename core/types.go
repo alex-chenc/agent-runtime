@@ -726,11 +726,13 @@ type RuntimeConfig struct {
 	ModelTimeout        time.Duration `json:"model_timeout"`
 	ToolTimeout         time.Duration `json:"tool_timeout"`
 	HookTimeout         time.Duration `json:"hook_timeout"`
-	// AsyncPollInitialBackoff and AsyncPollMaxBackoff bound the delay before the
-	// model decides how to continue after a successful non-terminal tool outcome.
-	// They do not select or invoke a completion tool on the model's behalf.
+	// AsyncPollInitialBackoff and AsyncPollMaxBackoff bound the delay between
+	// runtime-owned polls after a successful non-terminal tool outcome.
+	// MaxAsyncPollAttempts bounds that autonomous loop so a permanently pending
+	// backend operation cannot keep a task running indefinitely.
 	AsyncPollInitialBackoff time.Duration `json:"async_poll_initial_backoff"`
 	AsyncPollMaxBackoff     time.Duration `json:"async_poll_max_backoff"`
+	MaxAsyncPollAttempts    int           `json:"max_async_poll_attempts"`
 	EnableReflection        bool          `json:"enable_reflection"`
 	EnableAudit             bool          `json:"enable_audit"`
 	EnableCorrection        bool          `json:"enable_correction"`
@@ -767,7 +769,7 @@ func DefaultConfig() RuntimeConfig {
 		MaxModelFailures: 5, MaxParseFailures: 3, MaxNoProgressTurns: 3,
 		TaskTimeout: 10 * time.Minute, ModelTimeout: 60 * time.Second,
 		ToolTimeout: 60 * time.Second, HookTimeout: 10 * time.Second,
-		AsyncPollInitialBackoff: 0, AsyncPollMaxBackoff: 0,
+		AsyncPollInitialBackoff: 0, AsyncPollMaxBackoff: 0, MaxAsyncPollAttempts: 12,
 		EnableReflection: true, EnableAudit: true, EnableCorrection: true,
 		EnableExperience: true, AuditEveryNSteps: 3, AuditEveryNTurns: 0,
 		MaxAudits: 5, MaxCorrections: 3, MaxReflections: 5, MaxStepRetries: 2,
@@ -826,6 +828,9 @@ func (c RuntimeConfig) Validate() error {
 	if c.AsyncPollMaxBackoff > 0 && c.AsyncPollInitialBackoff > c.AsyncPollMaxBackoff {
 		return fmt.Errorf("config: AsyncPollInitialBackoff must be <= AsyncPollMaxBackoff")
 	}
+	if c.MaxAsyncPollAttempts < 1 {
+		return fmt.Errorf("config: MaxAsyncPollAttempts must be >= 1, got %d", c.MaxAsyncPollAttempts)
+	}
 	if c.HookTimeout <= 0 {
 		return fmt.Errorf("config: HookTimeout must be > 0")
 	}
@@ -879,6 +884,7 @@ type ConfigPatch struct {
 	ToolTimeout             *time.Duration `json:"tool_timeout,omitempty"`
 	AsyncPollInitialBackoff *time.Duration `json:"async_poll_initial_backoff,omitempty"`
 	AsyncPollMaxBackoff     *time.Duration `json:"async_poll_max_backoff,omitempty"`
+	MaxAsyncPollAttempts    *int           `json:"max_async_poll_attempts,omitempty"`
 	EnableReflection        *bool          `json:"enable_reflection,omitempty"`
 	EnableAudit             *bool          `json:"enable_audit,omitempty"`
 	EnableCorrection        *bool          `json:"enable_correction,omitempty"`
@@ -925,6 +931,9 @@ func (c RuntimeConfig) ApplyPatch(patch ConfigPatch) RuntimeConfig {
 	}
 	if patch.AsyncPollMaxBackoff != nil {
 		result.AsyncPollMaxBackoff = *patch.AsyncPollMaxBackoff
+	}
+	if patch.MaxAsyncPollAttempts != nil {
+		result.MaxAsyncPollAttempts = *patch.MaxAsyncPollAttempts
 	}
 	if patch.EnableReflection != nil {
 		result.EnableReflection = *patch.EnableReflection

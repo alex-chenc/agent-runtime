@@ -291,6 +291,21 @@ reactLoop:
 						CallID: obs.CallID,
 					}
 				}
+				if pendingAsyncPoll != nil && pendingAsyncPoll.Attempt >= e.config.MaxAsyncPollAttempts {
+					result.Status = core.StepFailed
+					result.Error = &core.RuntimeError{
+						ErrorID:     e.idGen.Generate(),
+						Kind:        core.ErrToolCall,
+						Stage:       "async_poll",
+						TaskID:      taskCtx.TaskID,
+						StepID:      step.StepID,
+						ToolCallID:  obs.CallID,
+						Message:     fmt.Sprintf("asynchronous operation remained non-terminal after %d automatic polls", e.config.MaxAsyncPollAttempts),
+						Recoverable: true,
+						OccurredAt:  time.Now(),
+					}
+					result.Errors = append(result.Errors, *result.Error)
+				}
 			} else {
 				asyncPollStreak = 0
 				pendingAsyncPoll = nil

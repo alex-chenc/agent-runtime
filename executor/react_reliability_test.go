@@ -219,6 +219,42 @@ func TestReActNonTerminalPollsDoNotExhaustReasoningBudget(t *testing.T) {
 	}
 }
 
+func TestReActNonTerminalPollsStopAtConfiguredLimit(t *testing.T) {
+	llm := &reliabilitySequenceLLM{responses: []core.LLMResponse{
+		{Content: `{"action":"tool_call","summary":"poll","tool_call":{"tool_name":"Example.Run","reason":"poll","args":{"target_ids":["host-1"]}}}`},
+	}}
+	running := core.ToolResponse{
+		Status:  core.ToolCallSuccess,
+		Content: `{"status":"running"}`,
+		Outcome: &core.ToolOutcome{OperationStatus: core.OperationRunning, Terminal: false},
+	}
+	tools := &reliabilityToolCaller{
+		descriptors: []core.ToolDescriptor{reliabilityDescriptor()},
+		responses:   []core.ToolResponse{running, running, running},
+	}
+	config := reliabilityConfig()
+	config.MaxAsyncPollAttempts = 2
+	executor := NewReActExecutor(llm, tools, nil, &reliabilityIDGenerator{}, nil, config, nil, nil)
+
+	result := executor.RunStep(context.Background(), &StepContext{
+		TaskID:    "task-async-limit",
+		UserInput: "wait for the operation to complete",
+	}, reliabilityStep())
+
+	if result.Status != core.StepFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	if result.Error == nil || result.Error.Stage != "async_poll" {
+		t.Fatalf("error = %#v, want async polling limit error", result.Error)
+	}
+	if len(result.ToolCalls) != 3 {
+		t.Fatalf("tool calls = %d, want initial call plus two automatic polls", len(result.ToolCalls))
+	}
+	if len(llm.requests) != 1 {
+		t.Fatalf("LLM requests = %d, want 1 because polls are runtime-owned", len(llm.requests))
+	}
+}
+
 func TestReActRequestUsesExactDynamicToolSchema(t *testing.T) {
 	llm := &reliabilitySequenceLLM{responses: []core.LLMResponse{
 		{Content: `{"action":"fail_step","summary":"stop","failure":{"reason":"test","recoverable":false}}`},
