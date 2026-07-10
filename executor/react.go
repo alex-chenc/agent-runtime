@@ -18,16 +18,18 @@ import (
 
 // ReActExecutor executes plan steps using the ReAct loop.
 type ReActExecutor struct {
-	llmClient          core.LLMClient
-	toolGW             ToolCaller
-	experienceProvider core.ExperienceProvider
-	idGen              core.IDGenerator
-	provider           core.PromptProvider
-	config             core.RuntimeConfig
-	hookMgr            HookEmitter
-	compressor         *contextbudget.Compressor
-	toolResultCache    map[string]terminalToolResult
-	toolResultCacheMu  sync.Mutex
+	llmClient            core.LLMClient
+	toolGW               ToolCaller
+	experienceProvider   core.ExperienceProvider
+	idGen                core.IDGenerator
+	provider             core.PromptProvider
+	config               core.RuntimeConfig
+	hookMgr              HookEmitter
+	compressor           *contextbudget.Compressor
+	toolResultCache      map[string]terminalToolResult
+	toolResultCacheMu    sync.Mutex
+	capabilityEvidence   map[string]core.ToolOutcome
+	capabilityEvidenceMu sync.Mutex
 }
 
 // HookEmitter is the interface for emitting hook events from the executor.
@@ -65,6 +67,7 @@ func NewReActExecutor(
 		hookMgr:            hookMgr,
 		compressor:         compressor,
 		toolResultCache:    make(map[string]terminalToolResult),
+		capabilityEvidence: make(map[string]core.ToolOutcome),
 	}
 }
 
@@ -656,6 +659,31 @@ func (e *ReActExecutor) executeTool(
 		RiskLevel:   step.RiskLevel,
 		StartedAt:   start,
 	}
+	if prerequisiteErr := e.validateToolPrerequisites(action.ToolName); prerequisiteErr != "" {
+		record.Status = core.ToolCallFailed
+		record.ErrorMessage = prerequisiteErr
+		record.ValidationStage = string(core.ToolValidationPolicy)
+		record.EndedAt = time.Now()
+		obs := &core.Observation{
+			ToolName: action.ToolName,
+			CallID:   callID,
+			Status:   core.ToolCallFailed,
+			Error:    prerequisiteErr,
+			Summary:  prerequisiteErr,
+			Duration: time.Since(start),
+		}
+		return obs, record, &core.RuntimeError{
+			ErrorID:     e.idGen.Generate(),
+			Kind:        core.ErrToolPolicyDenied,
+			Stage:       "tool_prerequisite",
+			TaskID:      taskCtx.TaskID,
+			StepID:      step.StepID,
+			ToolCallID:  callID,
+			Message:     prerequisiteErr,
+			Recoverable: true,
+			OccurredAt:  start,
+		}
+	}
 
 	// Emit HookToolCallStarted
 	if e.hookMgr != nil && !options.SilentHooks {
@@ -829,6 +857,7 @@ func (e *ReActExecutor) executeTool(
 	record.ResultSummary = resp.Summary
 	record.ErrorMessage = resp.ErrorMessage
 	record.Outcome = resp.Outcome
+	e.rememberCapabilityEvidence(resp.Outcome)
 	if !resp.StartedAt.IsZero() {
 		record.StartedAt = resp.StartedAt
 	}
@@ -893,6 +922,48 @@ func (e *ReActExecutor) executeTool(
 	return obs, record, nil
 }
 
+func (e *ReActExecutor) validateToolPrerequisites(toolName string) string {
+	descriptor, ok := e.toolDescriptor(toolName)
+	if !ok || len(descriptor.Prerequisites) == 0 {
+		return ""
+	}
+	e.capabilityEvidenceMu.Lock()
+	defer e.capabilityEvidenceMu.Unlock()
+	for _, prerequisite := range descriptor.Prerequisites {
+		capability := strings.TrimSpace(prerequisite.Capability)
+		outcome, found := e.capabilityEvidence[capability]
+		switch prerequisite.Condition {
+		case core.PrerequisiteCapabilityEmptyResult:
+			if !found || !outcome.Terminal || outcome.OperationStatus != core.OperationSucceeded || len(outcome.Facts) != 0 {
+				return fmt.Sprintf("tool prerequisite not met: %s requires a terminal empty result from capability %s", prerequisite.Condition, capability)
+			}
+		}
+	}
+	return ""
+}
+
+func (e *ReActExecutor) rememberCapabilityEvidence(outcome *core.ToolOutcome) {
+	if e == nil || outcome == nil || strings.TrimSpace(outcome.Capability) == "" || !outcome.Terminal || outcome.OperationStatus != core.OperationSucceeded {
+		return
+	}
+	e.capabilityEvidenceMu.Lock()
+	e.capabilityEvidence[outcome.Capability] = *outcome
+	e.capabilityEvidenceMu.Unlock()
+}
+
+func (e *ReActExecutor) toolDescriptor(toolName string) (core.ToolDescriptor, bool) {
+	provider, ok := e.toolGW.(toolDescriptorProvider)
+	if !ok {
+		return core.ToolDescriptor{}, false
+	}
+	for _, descriptor := range provider.ToolDescriptors() {
+		if descriptor.Name == toolName {
+			return descriptor, true
+		}
+	}
+	return core.ToolDescriptor{}, false
+}
+
 func (e *ReActExecutor) cachedTerminalToolResult(taskID string, action core.ReactAction, options toolExecutionOptions) (terminalToolResult, bool) {
 	if e == nil || !e.shouldMemoizeTool(action.ToolName) || options.CallID != "" {
 		return terminalToolResult{}, false
@@ -921,16 +992,8 @@ func (e *ReActExecutor) storeTerminalToolResult(taskID string, action core.React
 }
 
 func (e *ReActExecutor) shouldMemoizeTool(toolName string) bool {
-	provider, ok := e.toolGW.(toolDescriptorProvider)
-	if !ok {
-		return false
-	}
-	for _, descriptor := range provider.ToolDescriptors() {
-		if descriptor.Name == toolName {
-			return !descriptor.Idempotent
-		}
-	}
-	return false
+	descriptor, ok := e.toolDescriptor(toolName)
+	return ok && !descriptor.Idempotent
 }
 
 func toolResultCacheKey(taskID, toolName string, args map[string]any) (string, bool) {

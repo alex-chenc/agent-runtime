@@ -281,15 +281,30 @@ type ToolDescriptor struct {
 	// completion for an asynchronous operation started by this tool. They are
 	// availability metadata, not an instruction to call a tool and not an
 	// authorization grant.
-	CompletionTools  []string      `json:"completion_tools,omitempty"`
-	RiskLevel        RiskLevel     `json:"risk_level"`
-	AutoCallable     bool          `json:"auto_callable"`
-	RequiresApproval bool          `json:"requires_approval"`
-	DefaultTimeout   time.Duration `json:"default_timeout"`
-	Idempotent       bool          `json:"idempotent"`
-	TypicalFailures  []string      `json:"typical_failures,omitempty"`
-	Tags             []string      `json:"tags,omitempty"`
+	CompletionTools  []string           `json:"completion_tools,omitempty"`
+	Prerequisites    []ToolPrerequisite `json:"prerequisites,omitempty"`
+	RiskLevel        RiskLevel          `json:"risk_level"`
+	AutoCallable     bool               `json:"auto_callable"`
+	RequiresApproval bool               `json:"requires_approval"`
+	DefaultTimeout   time.Duration      `json:"default_timeout"`
+	Idempotent       bool               `json:"idempotent"`
+	TypicalFailures  []string           `json:"typical_failures,omitempty"`
+	Tags             []string           `json:"tags,omitempty"`
 }
+
+// ToolPrerequisite declares evidence that must already exist in the current
+// runtime task before a descriptor becomes executable. It is registry-supplied
+// metadata, not a business workflow inferred from a tool name.
+type ToolPrerequisite struct {
+	Capability string `json:"capability"`
+	Condition  string `json:"condition"`
+}
+
+const (
+	// PrerequisiteCapabilityEmptyResult requires the most recent terminal,
+	// successful outcome for Capability to contain no extracted facts.
+	PrerequisiteCapabilityEmptyResult = "capability_empty_result"
+)
 
 type Plan struct {
 	PlanID      string     `json:"plan_id"`

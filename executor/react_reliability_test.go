@@ -312,3 +312,49 @@ func TestReActReusesTerminalNonIdempotentToolResultAcrossSteps(t *testing.T) {
 		t.Fatalf("second tool evidence = %#v, want cached logical call id-2", second.ToolCalls)
 	}
 }
+
+func TestReActBlocksConditionalCompanionUntilEmptyDiscoveryEvidence(t *testing.T) {
+	llm := &reliabilitySequenceLLM{responses: []core.LLMResponse{
+		{Content: `{"action":"tool_call","summary":"list","tool_call":{"tool_name":"Example.List","reason":"list","args":{}}}`},
+		{Content: `{"action":"step_result","summary":"done","step_result":{"result":"records found","evidence":["id-2"],"confidence":"high"}}`},
+		{Content: `{"action":"tool_call","summary":"fallback","tool_call":{"tool_name":"Example.Fallback","reason":"fallback","args":{}}}`},
+		{Content: `{"action":"fail_step","summary":"blocked","failure":{"reason":"fallback precondition not met","recoverable":true}}`},
+	}}
+	list := core.ToolDescriptor{Name: "Example.List", RiskLevel: core.RiskReadOnly, Idempotent: true, ArgsSchema: map[string]any{"type": "object"}}
+	fallback := core.ToolDescriptor{
+		Name:       "Example.Fallback",
+		RiskLevel:  core.RiskLow,
+		Idempotent: false,
+		ArgsSchema: map[string]any{"type": "object"},
+		Prerequisites: []core.ToolPrerequisite{{
+			Capability: "list_examples",
+			Condition:  core.PrerequisiteCapabilityEmptyResult,
+		}},
+	}
+	tools := &reliabilityToolCaller{
+		descriptors: []core.ToolDescriptor{list, fallback},
+		responses: []core.ToolResponse{{
+			Status:  core.ToolCallSuccess,
+			Content: `{"data":[{"id":"example-1"}]}`,
+			Outcome: &core.ToolOutcome{OperationStatus: core.OperationSucceeded, Terminal: true, Capability: "list_examples", Facts: []map[string]any{{"id": "example-1"}}},
+		}},
+	}
+	executor := NewReActExecutor(llm, tools, nil, &reliabilityIDGenerator{}, nil, reliabilityConfig(), nil, nil)
+	taskCtx := &StepContext{TaskID: "task-prerequisite", UserInput: "discover before fallback"}
+	listStep := reliabilityStep()
+	listStep.StepID = "list"
+	listStep.AllowedTools = []string{"Example.List"}
+	if result := executor.RunStep(context.Background(), taskCtx, listStep); result.Status != core.StepCompleted {
+		t.Fatalf("list status = %q, want completed; errors=%v", result.Status, result.Errors)
+	}
+	fallbackStep := reliabilityStep()
+	fallbackStep.StepID = "fallback"
+	fallbackStep.AllowedTools = []string{"Example.Fallback"}
+	result := executor.RunStep(context.Background(), taskCtx, fallbackStep)
+	if result.Status != core.StepFailed {
+		t.Fatalf("fallback status = %q, want failed", result.Status)
+	}
+	if len(tools.requests) != 1 {
+		t.Fatalf("tool requests = %d, want fallback blocked before gateway", len(tools.requests))
+	}
+}
