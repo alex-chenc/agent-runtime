@@ -267,3 +267,45 @@ func TestReActRequestUsesExactDynamicToolSchema(t *testing.T) {
 		t.Fatalf("response schema exposes localized descriptive text: %s", schemaText)
 	}
 }
+
+func TestReActReusesTerminalNonIdempotentToolResultAcrossSteps(t *testing.T) {
+	llm := &reliabilitySequenceLLM{responses: []core.LLMResponse{
+		{Content: `{"action":"tool_call","summary":"write","tool_call":{"tool_name":"Example.Write","reason":"write","args":{"target_ids":["host-1"]}}}`},
+		{Content: `{"action":"step_result","summary":"done","step_result":{"result":"written","evidence":["id-2"],"confidence":"high"}}`},
+		{Content: `{"action":"tool_call","summary":"reuse write","tool_call":{"tool_name":"Example.Write","reason":"reuse","args":{"target_ids":["host-1"]}}}`},
+		{Content: `{"action":"step_result","summary":"done","step_result":{"result":"already written","evidence":["id-2"],"confidence":"high"}}`},
+	}}
+	writeDescriptor := reliabilityDescriptor()
+	writeDescriptor.Name = "Example.Write"
+	writeDescriptor.Idempotent = false
+	tools := &reliabilityToolCaller{
+		descriptors: []core.ToolDescriptor{writeDescriptor},
+		responses: []core.ToolResponse{{
+			Status:  core.ToolCallSuccess,
+			Content: `{"status":"succeeded"}`,
+			Outcome: &core.ToolOutcome{OperationStatus: core.OperationSucceeded, Terminal: true},
+		}},
+	}
+	executor := NewReActExecutor(llm, tools, nil, &reliabilityIDGenerator{}, nil, reliabilityConfig(), nil, nil)
+	stepOne := reliabilityStep()
+	stepOne.StepID = "step-1"
+	stepOne.AllowedTools = []string{"Example.Write"}
+	stepTwo := reliabilityStep()
+	stepTwo.StepID = "step-2"
+	stepTwo.AllowedTools = []string{"Example.Write"}
+	taskCtx := &StepContext{TaskID: "task-write-cache", UserInput: "write once"}
+
+	if result := executor.RunStep(context.Background(), taskCtx, stepOne); result.Status != core.StepCompleted {
+		t.Fatalf("first status = %q, want completed; errors=%v", result.Status, result.Errors)
+	}
+	second := executor.RunStep(context.Background(), taskCtx, stepTwo)
+	if second.Status != core.StepCompleted {
+		t.Fatalf("second status = %q, want completed; errors=%v", second.Status, second.Errors)
+	}
+	if len(tools.requests) != 1 {
+		t.Fatalf("tool requests = %d, want one physical non-idempotent call", len(tools.requests))
+	}
+	if len(second.ToolCalls) != 1 || second.ToolCalls[0].CallID != "id-2" {
+		t.Fatalf("second tool evidence = %#v, want cached logical call id-2", second.ToolCalls)
+	}
+}

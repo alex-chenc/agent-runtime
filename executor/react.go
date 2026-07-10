@@ -2,9 +2,11 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alex-chenc/agent-runtime/contextbudget"
@@ -24,6 +26,8 @@ type ReActExecutor struct {
 	config             core.RuntimeConfig
 	hookMgr            HookEmitter
 	compressor         *contextbudget.Compressor
+	toolResultCache    map[string]terminalToolResult
+	toolResultCacheMu  sync.Mutex
 }
 
 // HookEmitter is the interface for emitting hook events from the executor.
@@ -60,6 +64,7 @@ func NewReActExecutor(
 		config:             config,
 		hookMgr:            hookMgr,
 		compressor:         compressor,
+		toolResultCache:    make(map[string]terminalToolResult),
 	}
 }
 
@@ -617,6 +622,15 @@ type toolExecutionOptions struct {
 	Context     map[string]string
 }
 
+// terminalToolResult preserves evidence for a completed non-idempotent call
+// within this Runtime instance. A model can revisit a later plan step and
+// propose the same write again; replaying it would create duplicate tasks or
+// side effects even though the first terminal result is already available.
+type terminalToolResult struct {
+	Response core.ToolResponse
+	Record   core.ToolCallRecord
+}
+
 func (e *ReActExecutor) executeTool(
 	ctx context.Context,
 	taskCtx *StepContext,
@@ -627,6 +641,9 @@ func (e *ReActExecutor) executeTool(
 	callID := options.CallID
 	if callID == "" {
 		callID = e.idGen.Generate()
+	}
+	if cached, ok := e.cachedTerminalToolResult(taskCtx.TaskID, action, options); ok {
+		return cachedObservation(cached), cached.Record, nil
 	}
 	start := time.Now()
 	record := core.ToolCallRecord{
@@ -871,8 +888,81 @@ func (e *ReActExecutor) executeTool(
 			},
 		})
 	}
+	e.storeTerminalToolResult(taskCtx.TaskID, action, options, resp, record)
 
 	return obs, record, nil
+}
+
+func (e *ReActExecutor) cachedTerminalToolResult(taskID string, action core.ReactAction, options toolExecutionOptions) (terminalToolResult, bool) {
+	if e == nil || !e.shouldMemoizeTool(action.ToolName) || options.CallID != "" {
+		return terminalToolResult{}, false
+	}
+	key, ok := toolResultCacheKey(taskID, action.ToolName, action.ToolArgs)
+	if !ok {
+		return terminalToolResult{}, false
+	}
+	e.toolResultCacheMu.Lock()
+	defer e.toolResultCacheMu.Unlock()
+	cached, ok := e.toolResultCache[key]
+	return cached, ok
+}
+
+func (e *ReActExecutor) storeTerminalToolResult(taskID string, action core.ReactAction, options toolExecutionOptions, response core.ToolResponse, record core.ToolCallRecord) {
+	if e == nil || !e.shouldMemoizeTool(action.ToolName) || options.CallID != "" || !terminalSuccessfulResponse(response) {
+		return
+	}
+	key, ok := toolResultCacheKey(taskID, action.ToolName, action.ToolArgs)
+	if !ok {
+		return
+	}
+	e.toolResultCacheMu.Lock()
+	e.toolResultCache[key] = terminalToolResult{Response: response, Record: record}
+	e.toolResultCacheMu.Unlock()
+}
+
+func (e *ReActExecutor) shouldMemoizeTool(toolName string) bool {
+	provider, ok := e.toolGW.(toolDescriptorProvider)
+	if !ok {
+		return false
+	}
+	for _, descriptor := range provider.ToolDescriptors() {
+		if descriptor.Name == toolName {
+			return !descriptor.Idempotent
+		}
+	}
+	return false
+}
+
+func toolResultCacheKey(taskID, toolName string, args map[string]any) (string, bool) {
+	encodedArgs, err := json.Marshal(args)
+	if err != nil {
+		return "", false
+	}
+	return taskID + "\x00" + toolName + "\x00" + string(encodedArgs), true
+}
+
+func terminalSuccessfulResponse(response core.ToolResponse) bool {
+	if response.Status != "" && response.Status != core.ToolCallSuccess {
+		return false
+	}
+	if response.Outcome == nil {
+		return true
+	}
+	return response.Outcome.Terminal && (response.Outcome.OperationStatus == core.OperationSucceeded || response.Outcome.OperationStatus == core.OperationSkipped)
+}
+
+func cachedObservation(cached terminalToolResult) *core.Observation {
+	record := cached.Record
+	response := cached.Response
+	return &core.Observation{
+		ToolName: response.ToolName,
+		CallID:   record.CallID,
+		Status:   record.Status,
+		Content:  response.Content,
+		Summary:  response.Summary,
+		Outcome:  response.Outcome,
+		Duration: record.EndedAt.Sub(record.StartedAt),
+	}
 }
 
 func formatObservationForModel(observation *core.Observation) string {
