@@ -358,3 +358,21 @@ func TestReActBlocksConditionalCompanionUntilEmptyDiscoveryEvidence(t *testing.T
 		t.Fatalf("tool requests = %d, want fallback blocked before gateway", len(tools.requests))
 	}
 }
+
+func TestReActRequiresObservedCapabilityBeforeStatusCompanion(t *testing.T) {
+	status := core.ToolDescriptor{
+		Name: "Example.Status",
+		Prerequisites: []core.ToolPrerequisite{{
+			Capability: "start_example",
+			Condition:  core.PrerequisiteCapabilityObserved,
+		}},
+	}
+	executor := NewReActExecutor(nil, &reliabilityToolCaller{descriptors: []core.ToolDescriptor{status}}, nil, nil, nil, reliabilityConfig(), nil, nil)
+	if err := executor.validateToolPrerequisites("Example.Status"); err == "" {
+		t.Fatal("status prerequisite unexpectedly passed without start evidence")
+	}
+	executor.rememberCapabilityEvidence(&core.ToolOutcome{Capability: "start_example", OperationStatus: core.OperationAccepted, Terminal: false})
+	if err := executor.validateToolPrerequisites("Example.Status"); err != "" {
+		t.Fatalf("status prerequisite = %q, want accepted start evidence to satisfy it", err)
+	}
+}

@@ -8,4 +8,7 @@ type ToolDescriptor = core.ToolDescriptor
 // ToolPrerequisite declares evidence required before a descriptor can run.
 type ToolPrerequisite = core.ToolPrerequisite
 
-const PrerequisiteCapabilityEmptyResult = core.PrerequisiteCapabilityEmptyResult
+const (
+	PrerequisiteCapabilityObserved    = core.PrerequisiteCapabilityObserved
+	PrerequisiteCapabilityEmptyResult = core.PrerequisiteCapabilityEmptyResult
+)

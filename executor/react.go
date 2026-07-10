@@ -933,6 +933,10 @@ func (e *ReActExecutor) validateToolPrerequisites(toolName string) string {
 		capability := strings.TrimSpace(prerequisite.Capability)
 		outcome, found := e.capabilityEvidence[capability]
 		switch prerequisite.Condition {
+		case core.PrerequisiteCapabilityObserved:
+			if !found || outcome.OperationStatus == core.OperationFailed {
+				return fmt.Sprintf("tool prerequisite not met: %s requires prior evidence from capability %s", prerequisite.Condition, capability)
+			}
 		case core.PrerequisiteCapabilityEmptyResult:
 			if !found || !outcome.Terminal || outcome.OperationStatus != core.OperationSucceeded || len(outcome.Facts) != 0 {
 				return fmt.Sprintf("tool prerequisite not met: %s requires a terminal empty result from capability %s", prerequisite.Condition, capability)
@@ -943,7 +947,7 @@ func (e *ReActExecutor) validateToolPrerequisites(toolName string) string {
 }
 
 func (e *ReActExecutor) rememberCapabilityEvidence(outcome *core.ToolOutcome) {
-	if e == nil || outcome == nil || strings.TrimSpace(outcome.Capability) == "" || !outcome.Terminal || outcome.OperationStatus != core.OperationSucceeded {
+	if e == nil || outcome == nil || strings.TrimSpace(outcome.Capability) == "" || outcome.OperationStatus == core.OperationFailed {
 		return
 	}
 	e.capabilityEvidenceMu.Lock()

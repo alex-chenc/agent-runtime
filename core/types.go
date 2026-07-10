@@ -301,6 +301,9 @@ type ToolPrerequisite struct {
 }
 
 const (
+	// PrerequisiteCapabilityObserved requires a prior successful or accepted
+	// outcome for Capability in the current runtime task.
+	PrerequisiteCapabilityObserved = "capability_observed"
 	// PrerequisiteCapabilityEmptyResult requires the most recent terminal,
 	// successful outcome for Capability to contain no extracted facts.
 	PrerequisiteCapabilityEmptyResult = "capability_empty_result"
