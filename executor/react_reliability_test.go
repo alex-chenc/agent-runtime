@@ -98,6 +98,7 @@ func reliabilityDescriptor() core.ToolDescriptor {
 		Name:        "Example.Run",
 		Description: "Run the example operation.",
 		RiskLevel:   core.RiskReadOnly,
+		Idempotent:  true,
 		ArgsSchema: map[string]any{
 			"type":     "object",
 			"required": []any{"target_ids"},
@@ -171,10 +172,7 @@ func TestReActObservationExposesCallIDOutcomeAndError(t *testing.T) {
 func TestReActNonTerminalPollsDoNotExhaustReasoningBudget(t *testing.T) {
 	llm := &reliabilitySequenceLLM{responses: []core.LLMResponse{
 		{Content: `{"action":"tool_call","summary":"poll 1","tool_call":{"tool_name":"Example.Run","reason":"poll","args":{"target_ids":["host-1"]}}}`},
-		{Content: `{"action":"tool_call","summary":"poll 2","tool_call":{"tool_name":"Example.Run","reason":"poll","args":{"target_ids":["host-1"]}}}`},
-		{Content: `{"action":"tool_call","summary":"poll 3","tool_call":{"tool_name":"Example.Run","reason":"poll","args":{"target_ids":["host-1"]}}}`},
-		{Content: `{"action":"tool_call","summary":"poll 4","tool_call":{"tool_name":"Example.Run","reason":"poll","args":{"target_ids":["host-1"]}}}`},
-		{Content: `{"action":"step_result","summary":"done","step_result":{"result":"operation completed","evidence":["id-8"],"confidence":"high"}}`},
+		{Content: `{"action":"step_result","summary":"done","step_result":{"result":"operation completed","evidence":["id-2"],"confidence":"high"}}`},
 	}}
 	running := core.ToolResponse{
 		Status:  core.ToolCallSuccess,
@@ -205,8 +203,19 @@ func TestReActNonTerminalPollsDoNotExhaustReasoningBudget(t *testing.T) {
 	if len(result.ToolCalls) != 4 {
 		t.Fatalf("tool calls = %d, want 4", len(result.ToolCalls))
 	}
-	if result.Evidence[0] != "id-8" {
-		t.Fatalf("evidence = %v, want terminal call id-8", result.Evidence)
+	if len(llm.requests) != 2 {
+		t.Fatalf("LLM requests = %d, want 2 because repeated polling is runtime-owned", len(llm.requests))
+	}
+	if result.Evidence[0] != "id-2" {
+		t.Fatalf("evidence = %v, want terminal logical call id-2", result.Evidence)
+	}
+	for _, request := range tools.requests[1:] {
+		if request.CallID != "id-2" {
+			t.Fatalf("automatic poll call ID = %q, want logical call id-2", request.CallID)
+		}
+		if request.Context["agent_runtime_async_poll"] != "true" {
+			t.Fatalf("automatic poll context = %#v, want async marker", request.Context)
+		}
 	}
 }
 

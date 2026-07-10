@@ -23,3 +23,19 @@ func TestNormalizePlanStepRiskLevelsUsesRuntimeDescriptors(t *testing.T) {
 		t.Fatalf("write step risk = %q, want high", got)
 	}
 }
+
+func TestApplyGeneratedStepToolBoundariesKeepsOnlyRegisteredSuggestions(t *testing.T) {
+	plan := &core.Plan{Steps: []core.PlanStep{{
+		StepID:         "execute",
+		SuggestedTools: []string{"Host.List", "Task.Create", "Host.List", "Vulnerability.Script.Execute"},
+	}}}
+	applyGeneratedStepToolBoundaries(plan, []core.ToolDescriptor{
+		{Name: "Host.List"},
+		{Name: "Vulnerability.Script.Execute"},
+	})
+
+	got := plan.Steps[0].AllowedTools
+	if len(got) != 2 || got[0] != "Host.List" || got[1] != "Vulnerability.Script.Execute" {
+		t.Fatalf("allowed tools = %#v, want registered unique suggestions", got)
+	}
+}

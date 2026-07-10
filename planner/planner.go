@@ -169,9 +169,40 @@ func (p *Planner) Generate(ctx context.Context, input PlanInput) (*core.Plan, er
 		plan.Steps[i].Status = core.StepPending
 		plan.Steps[i].CreatedBy = "planner"
 	}
+	applyGeneratedStepToolBoundaries(plan, input.Tools)
 	normalizePlanStepRiskLevels(plan, input.Tools)
 
 	return plan, nil
+}
+
+// applyGeneratedStepToolBoundaries turns the planner's tool selection into an
+// executable boundary. The task remains model-planned, but a later ReAct turn
+// cannot invent a tool outside the registry or cross into another plan step's
+// responsibility. A correction can still replace the step when a different
+// registered tool is genuinely required.
+func applyGeneratedStepToolBoundaries(plan *core.Plan, descriptors []core.ToolDescriptor) {
+	if plan == nil || len(descriptors) == 0 {
+		return
+	}
+	known := make(map[string]struct{}, len(descriptors))
+	for _, descriptor := range descriptors {
+		known[descriptor.Name] = struct{}{}
+	}
+	for index := range plan.Steps {
+		seen := make(map[string]struct{}, len(plan.Steps[index].SuggestedTools))
+		allowed := make([]string, 0, len(plan.Steps[index].SuggestedTools))
+		for _, toolName := range plan.Steps[index].SuggestedTools {
+			if _, ok := known[toolName]; !ok {
+				continue
+			}
+			if _, duplicate := seen[toolName]; duplicate {
+				continue
+			}
+			seen[toolName] = struct{}{}
+			allowed = append(allowed, toolName)
+		}
+		plan.Steps[index].AllowedTools = allowed
+	}
 }
 
 func normalizePlanStepRiskLevels(plan *core.Plan, descriptors []core.ToolDescriptor) {

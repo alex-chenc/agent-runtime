@@ -91,6 +91,7 @@ func (e *ReActExecutor) RunStep(ctx context.Context, taskCtx *StepContext, step 
 	failedToolSignatures := make(map[string]int)
 	reasoningTurns := 0
 	asyncPollStreak := 0
+	var pendingAsyncPoll *asyncPollState
 
 reactLoop:
 	for turnIdx := 0; reasoningTurns < e.config.MaxStepReactTurns; turnIdx++ {
@@ -136,68 +137,77 @@ reactLoop:
 			StartedAt: time.Now(),
 		}
 
-		// Call LLM
-		callID := e.idGen.Generate()
-		turn.ModelCallID = callID
+		var action core.ReactAction
+		autoPolling := pendingAsyncPoll != nil
+		if autoPolling {
+			action = pendingAsyncPoll.Action
+			action.Summary = "Poll the pending asynchronous operation."
+		} else {
+			// Call the model only when business reasoning is needed. Once the
+			// model has selected an idempotent read-only status tool, Runtime
+			// owns the repetitive polling until that operation becomes terminal.
+			callID := e.idGen.Generate()
+			turn.ModelCallID = callID
 
-		resp, err := e.callLLM(ctx, taskCtx, step, turns, callID)
-		if err != nil {
-			parseErr := &core.RuntimeError{
-				ErrorID:     e.idGen.Generate(),
-				Kind:        core.ErrModelCall,
-				Stage:       "react",
-				TaskID:      taskCtx.TaskID,
-				StepID:      step.StepID,
-				ModelCallID: callID,
-				Message:     fmt.Sprintf("LLM call failed: %v", err),
-				Recoverable: true,
-				OccurredAt:  time.Now(),
+			resp, err := e.callLLM(ctx, taskCtx, step, turns, callID)
+			if err != nil {
+				parseErr := &core.RuntimeError{
+					ErrorID:     e.idGen.Generate(),
+					Kind:        core.ErrModelCall,
+					Stage:       "react",
+					TaskID:      taskCtx.TaskID,
+					StepID:      step.StepID,
+					ModelCallID: callID,
+					Message:     fmt.Sprintf("LLM call failed: %v", err),
+					Recoverable: true,
+					OccurredAt:  time.Now(),
+				}
+				turn.ParseError = parseErr
+				turn.EndedAt = time.Now()
+				turns = append(turns, turn)
+				result.Errors = append(result.Errors, *parseErr)
+				limit.IncrParseFailures()
+				if limit.ExceedsParseFailures(e.config.MaxParseFailures) {
+					result.Status = core.StepFailed
+					result.Error = parseErr
+					break
+				}
+				reasoningTurns++
+				asyncPollStreak = 0
+				continue
 			}
-			turn.ParseError = parseErr
-			turn.EndedAt = time.Now()
-			turns = append(turns, turn)
-			result.Errors = append(result.Errors, *parseErr)
-			limit.IncrParseFailures()
-			if limit.ExceedsParseFailures(e.config.MaxParseFailures) {
-				result.Status = core.StepFailed
-				result.Error = parseErr
-				break
+
+			// Parse action
+			action, err = ParseAction(resp.Content)
+			if err != nil {
+				parseErr := &core.RuntimeError{
+					ErrorID:     e.idGen.Generate(),
+					Kind:        core.ErrModelParse,
+					Stage:       "react",
+					TaskID:      taskCtx.TaskID,
+					StepID:      step.StepID,
+					ModelCallID: callID,
+					Message:     fmt.Sprintf("parse action: %v", err),
+					Recoverable: true,
+					OccurredAt:  time.Now(),
+				}
+				turn.ParseError = parseErr
+				turn.EndedAt = time.Now()
+				turns = append(turns, turn)
+				result.Errors = append(result.Errors, *parseErr)
+				limit.IncrParseFailures()
+				if limit.ExceedsParseFailures(e.config.MaxParseFailures) {
+					result.Status = core.StepFailed
+					result.Error = parseErr
+					break
+				}
+				reasoningTurns++
+				asyncPollStreak = 0
+				continue
 			}
-			reasoningTurns++
-			asyncPollStreak = 0
-			continue
+
+			limit.ResetParseFailures()
 		}
-
-		// Parse action
-		action, err := ParseAction(resp.Content)
-		if err != nil {
-			parseErr := &core.RuntimeError{
-				ErrorID:     e.idGen.Generate(),
-				Kind:        core.ErrModelParse,
-				Stage:       "react",
-				TaskID:      taskCtx.TaskID,
-				StepID:      step.StepID,
-				ModelCallID: callID,
-				Message:     fmt.Sprintf("parse action: %v", err),
-				Recoverable: true,
-				OccurredAt:  time.Now(),
-			}
-			turn.ParseError = parseErr
-			turn.EndedAt = time.Now()
-			turns = append(turns, turn)
-			result.Errors = append(result.Errors, *parseErr)
-			limit.IncrParseFailures()
-			if limit.ExceedsParseFailures(e.config.MaxParseFailures) {
-				result.Status = core.StepFailed
-				result.Error = parseErr
-				break
-			}
-			reasoningTurns++
-			asyncPollStreak = 0
-			continue
-		}
-
-		limit.ResetParseFailures()
 		consumeReasoningTurn := true
 		if action.Type == core.ActionToolCall {
 			action.ToolArgs = mergeBoundToolArgs(action.ToolArgs, step.ToolArgs)
@@ -223,7 +233,20 @@ reactLoop:
 				break
 			}
 
-			obs, record, toolErr := e.executeTool(ctx, taskCtx, step, action)
+			execution := toolExecutionOptions{}
+			if autoPolling {
+				pendingAsyncPoll.Attempt++
+				execution = toolExecutionOptions{
+					CallID:      pendingAsyncPoll.CallID,
+					SilentHooks: true,
+					Context: map[string]string{
+						"agent_runtime_async_poll":   "true",
+						"agent_runtime_poll_call_id": pendingAsyncPoll.CallID,
+						"agent_runtime_poll_attempt": fmt.Sprintf("%d", pendingAsyncPoll.Attempt),
+					},
+				}
+			}
+			obs, record, toolErr := e.executeTool(ctx, taskCtx, step, action, execution)
 			turn.Observation = obs
 			turn.ToolCallID = obs.CallID
 			result.ToolCalls = append(result.ToolCalls, record)
@@ -254,14 +277,22 @@ reactLoop:
 			if isNonTerminalAsyncObservation(obs) {
 				consumeReasoningTurn = false
 				asyncPollStreak++
+				if pendingAsyncPoll == nil && e.canAutoPoll(action.ToolName) {
+					pendingAsyncPoll = &asyncPollState{
+						Action: action,
+						CallID: obs.CallID,
+					}
+				}
 			} else {
 				asyncPollStreak = 0
+				pendingAsyncPoll = nil
 			}
 			turn.EndedAt = time.Now()
 			turns = append(turns, turn)
 
 		case core.ActionStepResult:
 			asyncPollStreak = 0
+			pendingAsyncPoll = nil
 			validation := validateStepCompletion(step, action, result.ToolCalls)
 			if !validation.Passed {
 				validationErr := core.RuntimeError{
@@ -286,6 +317,7 @@ reactLoop:
 
 		case core.ActionRequestExperience:
 			asyncPollStreak = 0
+			pendingAsyncPoll = nil
 			usage, progress, expErr := e.fetchExperience(ctx, taskCtx, step, action)
 			result.ExperienceUsage = append(result.ExperienceUsage, usage...)
 			turn.ProgressSummary = progress
@@ -297,6 +329,7 @@ reactLoop:
 
 		case core.ActionFailStep:
 			asyncPollStreak = 0
+			pendingAsyncPoll = nil
 			result.Status = core.StepFailed
 			result.Error = &core.RuntimeError{
 				ErrorID:    e.idGen.Generate(),
@@ -313,6 +346,7 @@ reactLoop:
 
 		default:
 			asyncPollStreak = 0
+			pendingAsyncPoll = nil
 			// Other action types -- treat as no progress for MVP
 			turn.EndedAt = time.Now()
 			turns = append(turns, turn)
@@ -571,8 +605,29 @@ func (e *ReActExecutor) fetchExperience(ctx context.Context, taskCtx *StepContex
 	return usage, "Relevant experience:\n" + textutil.Truncate(summary.String(), 2000), nil
 }
 
-func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, step *core.PlanStep, action core.ReactAction) (*core.Observation, core.ToolCallRecord, *core.RuntimeError) {
-	callID := e.idGen.Generate()
+type asyncPollState struct {
+	Action  core.ReactAction
+	CallID  string
+	Attempt int
+}
+
+type toolExecutionOptions struct {
+	CallID      string
+	SilentHooks bool
+	Context     map[string]string
+}
+
+func (e *ReActExecutor) executeTool(
+	ctx context.Context,
+	taskCtx *StepContext,
+	step *core.PlanStep,
+	action core.ReactAction,
+	options toolExecutionOptions,
+) (*core.Observation, core.ToolCallRecord, *core.RuntimeError) {
+	callID := options.CallID
+	if callID == "" {
+		callID = e.idGen.Generate()
+	}
 	start := time.Now()
 	record := core.ToolCallRecord{
 		CallID:      callID,
@@ -586,7 +641,7 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 	}
 
 	// Emit HookToolCallStarted
-	if e.hookMgr != nil {
+	if e.hookMgr != nil && !options.SilentHooks {
 		e.hookMgr.EmitAsync(ctx, core.HookEvent{
 			TaskID: taskCtx.TaskID,
 			StepID: step.StepID,
@@ -614,7 +669,7 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 		record.ErrorMessage = errMsg
 		record.EndedAt = time.Now()
 		// Emit HookToolCallFinished for gateway-not-configured error
-		if e.hookMgr != nil {
+		if e.hookMgr != nil && !options.SilentHooks {
 			e.hookMgr.EmitAsync(ctx, core.HookEvent{
 				TaskID: taskCtx.TaskID,
 				StepID: step.StepID,
@@ -659,7 +714,7 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 			Summary:  validationErr.Error(),
 			Duration: time.Since(start),
 		}
-		if e.hookMgr != nil {
+		if e.hookMgr != nil && !options.SilentHooks {
 			e.hookMgr.EmitAsync(ctx, core.HookEvent{
 				TaskID: taskCtx.TaskID,
 				StepID: step.StepID,
@@ -695,6 +750,7 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 		Reason:   action.Summary,
 		Args:     action.ToolArgs,
 		Timeout:  e.config.ToolTimeout,
+		Context:  options.Context,
 	})
 
 	obs := &core.Observation{
@@ -713,7 +769,7 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 		obs.Error = err.Error()
 		obs.Summary = fmt.Sprintf("Tool %s failed: %v", action.ToolName, err)
 		// Emit HookToolCallFinished for CallValidated error
-		if e.hookMgr != nil {
+		if e.hookMgr != nil && !options.SilentHooks {
 			e.hookMgr.EmitAsync(ctx, core.HookEvent{
 				TaskID: taskCtx.TaskID,
 				StepID: step.StepID,
@@ -770,7 +826,7 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 			kind = core.ErrToolTimeout
 		}
 		// Emit HookToolCallFinished for failed tool calls
-		if e.hookMgr != nil {
+		if e.hookMgr != nil && !options.SilentHooks {
 			e.hookMgr.EmitAsync(ctx, core.HookEvent{
 				TaskID: taskCtx.TaskID,
 				StepID: step.StepID,
@@ -799,7 +855,7 @@ func (e *ReActExecutor) executeTool(ctx context.Context, taskCtx *StepContext, s
 	}
 
 	// Emit HookToolCallFinished for successful tool calls
-	if e.hookMgr != nil {
+	if e.hookMgr != nil && !options.SilentHooks {
 		e.hookMgr.EmitAsync(ctx, core.HookEvent{
 			TaskID: taskCtx.TaskID,
 			StepID: step.StepID,
@@ -885,6 +941,19 @@ func asyncPollBackoff(config core.RuntimeConfig, streak int) time.Duration {
 		return config.AsyncPollMaxBackoff
 	}
 	return delay
+}
+
+func (e *ReActExecutor) canAutoPoll(toolName string) bool {
+	provider, ok := e.toolGW.(toolDescriptorProvider)
+	if !ok {
+		return false
+	}
+	for _, descriptor := range provider.ToolDescriptors() {
+		if descriptor.Name == toolName {
+			return descriptor.RiskLevel == core.RiskReadOnly && descriptor.Idempotent
+		}
+	}
+	return false
 }
 
 func operationStatus(outcome *core.ToolOutcome) string {
