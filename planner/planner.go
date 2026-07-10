@@ -178,21 +178,24 @@ func (p *Planner) Generate(ctx context.Context, input PlanInput) (*core.Plan, er
 // applyGeneratedStepToolBoundaries turns the planner's tool selection into an
 // executable boundary. The task remains model-planned, but a later ReAct turn
 // cannot invent a tool outside the registry or cross into another plan step's
-// responsibility. A correction can still replace the step when a different
-// registered tool is genuinely required.
+// responsibility. Contract-declared completion tools are included so a step
+// that starts an asynchronous operation can observe its terminal state without
+// reopening the boundary. A correction can still replace the step when a
+// different registered tool is genuinely required.
 func applyGeneratedStepToolBoundaries(plan *core.Plan, descriptors []core.ToolDescriptor) {
 	if plan == nil || len(descriptors) == 0 {
 		return
 	}
-	known := make(map[string]struct{}, len(descriptors))
+	known := make(map[string]core.ToolDescriptor, len(descriptors))
 	for _, descriptor := range descriptors {
-		known[descriptor.Name] = struct{}{}
+		known[descriptor.Name] = descriptor
 	}
 	for index := range plan.Steps {
 		seen := make(map[string]struct{}, len(plan.Steps[index].SuggestedTools))
 		allowed := make([]string, 0, len(plan.Steps[index].SuggestedTools))
 		for _, toolName := range plan.Steps[index].SuggestedTools {
-			if _, ok := known[toolName]; !ok {
+			descriptor, ok := known[toolName]
+			if !ok {
 				continue
 			}
 			if _, duplicate := seen[toolName]; duplicate {
@@ -200,6 +203,16 @@ func applyGeneratedStepToolBoundaries(plan *core.Plan, descriptors []core.ToolDe
 			}
 			seen[toolName] = struct{}{}
 			allowed = append(allowed, toolName)
+			for _, completionTool := range descriptor.CompletionTools {
+				if _, registered := known[completionTool]; !registered {
+					continue
+				}
+				if _, duplicate := seen[completionTool]; duplicate {
+					continue
+				}
+				seen[completionTool] = struct{}{}
+				allowed = append(allowed, completionTool)
+			}
 		}
 		plan.Steps[index].AllowedTools = allowed
 	}

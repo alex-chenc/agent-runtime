@@ -273,17 +273,22 @@ const (
 // ===== Core Data Structures =====
 
 type ToolDescriptor struct {
-	Name             string         `json:"name"`
-	Description      string         `json:"description"`
-	ArgsSchema       map[string]any `json:"args_schema,omitempty"`
-	ResultSchema     map[string]any `json:"result_schema,omitempty"`
-	RiskLevel        RiskLevel      `json:"risk_level"`
-	AutoCallable     bool           `json:"auto_callable"`
-	RequiresApproval bool           `json:"requires_approval"`
-	DefaultTimeout   time.Duration  `json:"default_timeout"`
-	Idempotent       bool           `json:"idempotent"`
-	TypicalFailures  []string       `json:"typical_failures,omitempty"`
-	Tags             []string       `json:"tags,omitempty"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description"`
+	ArgsSchema   map[string]any `json:"args_schema,omitempty"`
+	ResultSchema map[string]any `json:"result_schema,omitempty"`
+	// CompletionTools are registered read-only tools that can prove terminal
+	// completion for an asynchronous operation started by this tool. They are
+	// availability metadata, not an instruction to call a tool and not an
+	// authorization grant.
+	CompletionTools  []string      `json:"completion_tools,omitempty"`
+	RiskLevel        RiskLevel     `json:"risk_level"`
+	AutoCallable     bool          `json:"auto_callable"`
+	RequiresApproval bool          `json:"requires_approval"`
+	DefaultTimeout   time.Duration `json:"default_timeout"`
+	Idempotent       bool          `json:"idempotent"`
+	TypicalFailures  []string      `json:"typical_failures,omitempty"`
+	Tags             []string      `json:"tags,omitempty"`
 }
 
 type Plan struct {

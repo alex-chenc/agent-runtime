@@ -39,3 +39,23 @@ func TestApplyGeneratedStepToolBoundariesKeepsOnlyRegisteredSuggestions(t *testi
 		t.Fatalf("allowed tools = %#v, want registered unique suggestions", got)
 	}
 }
+
+func TestApplyGeneratedStepToolBoundariesIncludesRegisteredCompletionTools(t *testing.T) {
+	plan := &core.Plan{Steps: []core.PlanStep{{
+		StepID:         "generate",
+		SuggestedTools: []string{"Example.Generate"},
+	}}}
+	applyGeneratedStepToolBoundaries(plan, []core.ToolDescriptor{
+		{
+			Name:            "Example.Generate",
+			CompletionTools: []string{"Example.Status", "Unknown.Status"},
+		},
+		{Name: "Example.Status", RiskLevel: core.RiskReadOnly},
+		{Name: "Example.Execute", RiskLevel: core.RiskHigh},
+	})
+
+	got := plan.Steps[0].AllowedTools
+	if len(got) != 2 || got[0] != "Example.Generate" || got[1] != "Example.Status" {
+		t.Fatalf("allowed tools = %#v, want primary plus registered completion tool", got)
+	}
+}
